@@ -298,21 +298,66 @@ class ssh_security:
         else:
             return public.returnMsg(False, '开启失败')
 
+        # 取SSH信息
+
+    def GetSshInfo(self):
+        port = public.get_ssh_port()
+
+        pid_file = '/run/sshd.pid'
+        if os.path.exists(pid_file):
+            pid = int(public.readFile(pid_file))
+            status = public.pid_exists(pid)
+        else:
+            import system
+            panelsys = system.system()
+            version = panelsys.GetSystemVersion()
+            if os.path.exists('/usr/bin/apt-get'):
+                if os.path.exists('/etc/init.d/sshd'):
+                    status = public.ExecShell("service sshd status | grep -P '(dead|stop)'|grep -v grep")
+                else:
+                    status = public.ExecShell("service ssh status | grep -P '(dead|stop)'|grep -v grep")
+            else:
+                if version.find(' 7.') != -1 or version.find(' 8.') != -1 or version.find('Fedora') != -1:
+                    status = public.ExecShell("systemctl status sshd.service | grep 'dead'|grep -v grep")
+                else:
+                    status = public.ExecShell("/etc/init.d/sshd status | grep -e 'stopped' -e '已停'|grep -v grep")
+
+            #       return status;
+            if len(status[0]) > 3:
+                status = False
+            else:
+                status = True
+        return status
+
+
     def stop_key(self, get):
         '''
         关闭key
         无需参数传递
         '''
-        file = ['/root/.ssh/id_rsa.pub', '/root/.ssh/id_rsa', '/root/.ssh/authorized_keys']
-        rec = '\n#?RSAAuthentication\s\w+'
-        rec2 = '\n#?PubkeyAuthentication\s\w+'
-        file = public.readFile(self.__SSH_CONFIG)
-        file_ssh = re.sub(rec, '\nRSAAuthentication no', file)
-        file_result = re.sub(rec2, '\nPubkeyAuthentication no', file_ssh)
-        self.wirte(self.__SSH_CONFIG, file_result)
-        self.set_password(get)
-        self.restart_ssh()
-        return public.returnMsg(True, '关闭成功')
+        is_ssh_status=self.GetSshInfo()
+        if is_ssh_status:
+            file = ['/root/.ssh/id_rsa.pub', '/root/.ssh/id_rsa', '/root/.ssh/authorized_keys']
+            rec = '\n#?RSAAuthentication\s\w+'
+            rec2 = '\n#?PubkeyAuthentication\s\w+'
+            file = public.readFile(self.__SSH_CONFIG)
+            file_ssh = re.sub(rec, '\nRSAAuthentication no', file)
+            file_result = re.sub(rec2, '\nPubkeyAuthentication no', file_ssh)
+            self.wirte(self.__SSH_CONFIG, file_result)
+            self.set_password(get)
+            self.restart_ssh()
+            return public.returnMsg(True, '关闭成功')
+        else:
+            file = ['/root/.ssh/id_rsa.pub', '/root/.ssh/id_rsa', '/root/.ssh/authorized_keys']
+            rec = '\n#?RSAAuthentication\s\w+'
+            rec2 = '\n#?PubkeyAuthentication\s\w+'
+            file = public.readFile(self.__SSH_CONFIG)
+            file_ssh = re.sub(rec, '\nRSAAuthentication no', file)
+            file_result = re.sub(rec2, '\nPubkeyAuthentication no', file_ssh)
+            self.wirte(self.__SSH_CONFIG, file_result)
+            #self.set_password(get)
+            return public.returnMsg(True, '关闭成功')
+
 
     def get_config(self, get):
         '''
@@ -430,7 +475,82 @@ class ssh_security:
             public.ExecShell("systemctl " + act + " sshd.service")
         else:
             public.ExecShell("/etc/init.d/sshd " + act)
+    #检查是否设置了钉钉
+    def check_dingding(self, get):
+        '''
+        检查是否设置了钉钉
+        '''
+        #检查文件是否存在
+        if not os.path.exists('/www/server/panel/data/dingding.json'):return False
+        dingding_config=public.ReadFile('/www/server/panel/data/dingding.json')
+        if not dingding_config:return False
+        #解析json
+        try:
+            dingding=json.loads(dingding_config)
+            if dingding['dingding_url']:
+                return True
+        except:
+            return False
 
+    #开启SSH双因子认证
+    def start_auth_method(self, get):
+        '''
+        开启SSH双因子认证
+        '''
+        #检查是否设置了钉钉
+        #if not self.check_dingding(get): return public.returnMsg(False, '钉钉未设置')
+        import ssh_authentication
+        ssh_class=ssh_authentication.ssh_authentication()
+        return  ssh_class.start_ssh_authentication_two_factors()
+
+    #关闭SSH双因子认证
+    def stop_auth_method(self, get):
+        '''
+        关闭SSH双因子认证
+        '''
+        #检查是否设置了钉钉
+        #if not self.check_dingding(get): return public.returnMsg(False, '钉钉未设置')
+        import ssh_authentication
+        ssh_class=ssh_authentication.ssh_authentication()
+        return ssh_class.close_ssh_authentication_two_factors()
+
+    #获取SSH双因子认证状态
+    def get_auth_method(self, get):
+        '''
+        获取SSH双因子认证状态
+        '''
+        #检查是否设置了钉钉
+        #if not self.check_dingding(get): return public.returnMsg(False, '钉钉未设置')
+        import ssh_authentication
+        ssh_class=ssh_authentication.ssh_authentication()
+        return ssh_class.check_ssh_authentication_two_factors()
+
+    #判断so文件是否存在
+    def check_so_file(self, get):
+        '''
+        判断so文件是否存在
+        '''
+        import ssh_authentication
+        ssh_class=ssh_authentication.ssh_authentication()
+        return ssh_class.is_check_so()
+
+    #下载so文件
+    def get_so_file(self, get):
+        '''
+        下载so文件
+        '''
+        import ssh_authentication
+        ssh_class=ssh_authentication.ssh_authentication()
+        return ssh_class.download_so()
+
+    #获取pin
+    def get_pin(self, get):
+        '''
+        获取pin
+        '''
+        import ssh_authentication
+        ssh_class=ssh_authentication.ssh_authentication()
+        return public.returnMsg(True, ssh_class.get_pin())
 
 if __name__ == '__main__':
     import sys

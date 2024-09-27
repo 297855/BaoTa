@@ -25,7 +25,7 @@ class data:
     '''
     def setPs(self,get):
         id = get.id
-        if public.M(get.table).where("id=?",(id,)).setField('ps',get.ps):
+        if public.M(get.table).where("id=?",(id,)).setField('ps',public.xssencode2(get.ps)):
             return public.returnMsg(True,'EDIT_SUCCESS');    
         return public.returnMsg(False,'EDIT_ERROR')
     
@@ -171,7 +171,38 @@ class data:
             return int(db_size)
         except:
             return 0
-        
+
+    def get_site_quota(self,path):
+        '''
+            @name 获取网站目录配额信息
+            @author hwliang<2022-02-15>
+            @param path<string> 网站目录
+            @return dict
+        '''
+        res = {'size':0 ,'used':0 }
+        try:
+            from projectModel.quotaModel import main
+            quota_info =  main().get_quota_path_list(get_path = path)
+            if isinstance(quota_info,dict):
+                return quota_info
+            return res
+        except: return res
+
+    def get_database_quota(self,db_name):
+        '''
+            @name 获取网站目录配额信息
+            @author hwliang<2022-02-15>
+            @param path<string> 网站目录
+            @return dict
+        '''
+        res = {'size':0 ,'used':0 }
+        try:
+            from projectModel.quotaModel import main
+            quota_info = main().get_quota_mysql_list(get_name = db_name)
+            if isinstance(quota_info,dict):
+                return quota_info
+            return res
+        except: return res
     
     '''
      * 取数据列表
@@ -188,15 +219,24 @@ class data:
         
             if table == 'backup':
                 import os
+                backup_path = public.M('config').where('id=?',(1,)).getField('backup_path')
                 for i in range(len(data['data'])):
                     if data['data'][i]['size'] == 0:
-                        if os.path.exists(data['data'][i]['filename']): data['data'][i]['size'] = os.path.getsize(data['data'][i]['filename'])
+                        if os.path.exists(data['data'][i]['filename']): 
+                            data['data'][i]['size'] = os.path.getsize(data['data'][i]['filename'])
+                    else:
+                        if not os.path.exists(data['data'][i]['filename']): 
+                            if (data['data'][i]['filename'].find('/www/') != -1 or data['data'][i]['filename'].find(backup_path) != -1) and data['data'][i]['filename'][0] == '/' and data['data'][i]['filename'].find('|') == -1:
+                                data['data'][i]['size'] = 0
+                                data['data'][i]['ps'] = '文件不存在'
         
             elif table == 'sites' or table == 'databases':
                 type = '0'
                 if table == 'databases': type = '1'
                 for i in range(len(data['data'])):
                     data['data'][i]['backup_count'] = SQL.table('backup').where("pid=? AND type=?",(data['data'][i]['id'],type)).count()
+                    if table == 'databases': data['data'][i]['conn_config'] = json.loads(data['data'][i]['conn_config'])
+                    data['data'][i]['quota'] = self.get_database_quota(data['data'][i]['name'])
                 if table == 'sites':
                     for i in range(len(data['data'])):
                         data['data'][i]['domain'] = SQL.table('domain').where("pid=?",(data['data'][i]['id'],)).count()
@@ -204,12 +244,17 @@ class data:
                         data['data'][i]['php_version'] = self.get_php_version(data['data'][i]['name'])
                         if not data['data'][i]['status'] in ['0','1',0,1]:
                             data['data'][i]['status'] = '1'
+                        data['data'][i]['quota'] = self.get_site_quota(data['data'][i]['path'])
             elif table == 'firewall':
                 for i in range(len(data['data'])):
                     if data['data'][i]['port'].find(':') != -1 or data['data'][i]['port'].find('.') != -1 or data['data'][i]['port'].find('-') != -1:
                         data['data'][i]['status'] = -1
                     else:
                         data['data'][i]['status'] = self.CheckPort(int(data['data'][i]['port']))
+
+            elif table == 'ftps':
+                 for i in range(len(data['data'])):
+                     data['data'][i]['quota'] = self.get_site_quota(data['data'][i]['path'])
                 
             #返回
             return data
@@ -286,14 +331,28 @@ class data:
                         where += " or id=" + str(pid)
                     else:
                         where += "id=" + str(pid)
+                
+        if get.table == 'sites':
+            if where:
+                where = "({}) AND project_type='PHP'".format(where)
+            else:
+                where = "project_type='PHP'"
 
-        if get.table == 'sites' and hasattr(get,'type'):
-            if get.type != '-1':
-                type_where = "type_id=%s" % get.type
-                if where == '': 
-                    where = type_where
+            if hasattr(get,'type'):
+                if get.type != '-1':
+                    where += " AND type_id={}".format(get.type)
+
+        if get.table == 'databases':
+            if hasattr(get,'db_type'):
+                if where:
+                    where += " AND db_type='{}'".format(get.db_type)
                 else:
-                    where += " and " + type_where
+                    where = "db_type='{}'".format(get.db_type)
+            if hasattr(get,'sid'):
+                if where:
+                    where += " AND sid='{}'".format(get.sid)
+                else:
+                    where = "sid='{}'".format(get.sid)
         
         field = self.GetField(get.table)
         #实例化数据库对象
@@ -338,14 +397,14 @@ class data:
 
         if type(search) == bytes: search = search.encode('utf-8').strip()
         try:
-            search = re.search(r"[\w\x80-\xff\.]+",search).group()
+            search = re.search(r"[\w\x80-\xff\.\_\-]+",search).group()
         except:
             return ''
         wheres = {
-            'sites'     :   "id='"+search+"' or name like '%"+search+"%' or status like '%"+search+"%' or ps like '%"+search+"%'",
-            'ftps'      :   "id='"+search+"' or name like '%"+search+"%' or ps like '%"+search+"%'",
-            'databases' :   "id='"+search+"' or name like '%"+search+"%' or ps like '%"+search+"%'",
-            'logs'      :   "uid='"+search+"' or username='"+search+"' or type like '%"+search+"%' or log like '%"+search+"%' or addtime like '%"+search+"%'",
+            'sites'     :   "name like '%"+search+"%' or ps like '%"+search+"%'",
+            'ftps'      :   "name like '%"+search+"%' or ps like '%"+search+"%'",
+            'databases' :   "(name like '%"+search+"%' or ps like '%"+search+"%')",
+            'logs'      :   "username='"+search+"' or type like '%"+search+"%' or log like '%"+search+"%'",
             'backup'    :   "pid="+search+"",
             'users'     :   "id='"+search+"' or username='"+search+"'",
             'domain'    :   "pid='"+search+"' or name='"+search+"'",
@@ -360,9 +419,9 @@ class data:
         fields = {
             'sites'     :   "id,name,path,status,ps,addtime,edate",
             'ftps'      :   "id,pid,name,password,status,ps,addtime,path",
-            'databases' :   "id,pid,name,username,password,accept,ps,addtime",
+            'databases' :   "id,sid,pid,name,username,password,accept,ps,addtime,db_type,conn_config",
             'logs'      :   "id,uid,username,type,log,addtime",
-            'backup'    :   "id,pid,name,filename,addtime,size",
+            'backup'    :   "id,pid,name,filename,addtime,size,ps",
             'users'     :   "id,username,phone,email,login_ip,login_time",
             'firewall'  :   "id,port,ps,addtime",
             'domain'    :   "id,pid,name,port,addtime",

@@ -158,7 +158,16 @@ history -c
 '''
     os.system(command)
     print('\t\033[1;32m[done]\033[0m')
-    
+    if sys.version_info[0] == 3:
+        a_input = input('|-是否在首次开机自动按机器配置优化PHP/MySQL配置?(y/n default: y): ')
+    else:
+        a_input = raw_input('|-是否在首次开机自动按机器配置优化PHP/MySQL配置?(y/n default: y): ')
+    if not a_input: a_input = 'y'
+    print(a_input)
+    if not a_input in ['Y','y','yes','YES']:
+        public.ExecShell("rm -f /www/server/panel/php_mysql_auto.pl")
+    else:
+        public.writeFile('/www/server/panel/php_mysql_auto.pl',"True")
     
     print("|-请选择用户初始化方式：")
     print("="*50)
@@ -182,6 +191,7 @@ history -c
         print('\033[1;41m|-面板初始化地址: http://{SERVERIP}:'+port+'/install\033[0m')
     else:
         print('\033[1;41m|-获取初始帐号密码命令:bt default \033[0m')
+        print('\033[1;41m|-注意：仅在首次登录面板前能正确获取初始帐号密码 \033[0m')
 
 #清空正在执行的任务
 def CloseTask():
@@ -432,21 +442,24 @@ def bt_cli(u_input = 0):
         print("(1) 重启面板服务           (8) 改面板端口")
         print("(2) 停止面板服务           (9) 清除面板缓存")
         print("(3) 启动面板服务           (10) 清除登录限制")
-        print("(4) 重载面板服务           (11) 取消入口限制")
+        print("(4) 重载面板服务")
         print("(5) 修改面板密码           (12) 取消域名绑定限制")
         print("(6) 修改面板用户名         (13) 取消IP访问限制")
         print("(7) 强制修改MySQL密码      (14) 查看面板默认信息")
         print("(22) 显示面板错误日志      (15) 清理系统垃圾")
         print("(23) 关闭BasicAuth认证     (16) 修复面板(检查错误并更新面板文件到最新版)")
-        print("(24) 关闭谷歌认证          (17) 设置日志切割是否压缩")
+        print("(24) 关闭动态口令认证          (17) 设置日志切割是否压缩")
         print("(25) 设置是否保存文件历史副本  (18) 设置是否自动备份面板")
-        print("(0) 取消")
+        print("(0) 取消                   (29) 取消访问设备验证")
         print(raw_tip)
         try:
             u_input = input("请输入命令编号：")
             if sys.version_info[0] == 3: u_input = int(u_input)
         except: u_input = 0
     try:
+        if u_input in ['log','logs','error','err','tail','debug','info']:
+            os.system("tail -f {}".format(public.get_panel_log_file()))
+            return
         if u_input[:6] in ['instal','update']:
             print("提示：命令传参示例（编译安装php7.4）：bt install/0/php/7.4")
             print(sys.argv)
@@ -486,10 +499,13 @@ def bt_cli(u_input = 0):
             print(raw_tip)
             os.system("bash /www/server/panel/install/install_soft.sh {} {} {} {}".format(install_input,install_args[0],install_soft,install_version))
             exit()
+
+        print("不支持的指令")
+        exit()
     except: pass
 
 
-    nums = [1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,22,23,24,25]
+    nums = [1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,22,23,24,25,29]
     if not u_input in nums:
         print(raw_tip)
         print("已取消!")
@@ -498,7 +514,10 @@ def bt_cli(u_input = 0):
     print(raw_tip)
     print("正在执行(%s)..." % u_input)
     print(raw_tip)
-
+    if u_input == 29:
+        os.system("rm -rf /www/server/panel/data/ssl_verify_data.pl")
+        os.system("/etc/init.d/bt restart")
+        print("|-已关闭访问设备验证")
     if u_input == 1:
         os.system("/etc/init.d/bt restart")
     elif u_input == 2:
@@ -589,7 +608,7 @@ def bt_cli(u_input = 0):
         auth_file = 'data/admin_path.pl'
         if os.path.exists(auth_file): os.remove(auth_file)
         os.system("/etc/init.d/bt reload")
-        print("|-已取消入口限制")
+        print("|-已取消入口限制,请在URL地址中增加/login访问面板")
     elif u_input == 12:
         auth_file = 'data/domain.conf'
         if os.path.exists(auth_file): os.remove(auth_file)
@@ -674,8 +693,11 @@ if __name__ == "__main__":
         update_to6()
     elif type == "cli":
         clinum = 0
-        if len(sys.argv) > 2: 
-            clinum = int(sys.argv[2]) if sys.argv[2][:6] not in ['instal','update'] else sys.argv[2]
+        try:
+            if len(sys.argv) > 2: 
+                clinum = int(sys.argv[2]) if sys.argv[2][:6] not in ['instal','update'] else sys.argv[2]
+        except:
+            clinum = sys.argv[2]
         bt_cli(clinum)
     else:
         print('ERROR: Parameter error')

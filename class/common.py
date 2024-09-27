@@ -18,13 +18,16 @@ import time
 
 class panelSetup:
     def init(self):
+        panel_path = public.get_panel_path()
+        if os.getcwd() != panel_path: os.chdir(panel_path)
+
         g.ua = request.headers.get('User-Agent','')
         if g.ua:
             ua = g.ua.lower()
             if ua.find('spider') != -1 or g.ua.find('bot') != -1:
                 return redirect('https://www.baidu.com')
         
-        g.version = '7.8.10'
+        g.version = '7.9.25'
         g.title = public.GetConfigValue('title')
         g.uri = request.path
         g.debug = os.path.exists('data/debug.pl')
@@ -42,6 +45,11 @@ class panelSetup:
                 g.cdn_url = '/static'
             session['title'] = g.title
             
+        g.recycle_bin_open = 0
+        if os.path.exists("data/recycle_bin.pl"): g.recycle_bin_open = 1
+        
+        g.recycle_bin_db_open = 0
+        if os.path.exists("data/recycle_bin_db.pl"): g.recycle_bin_db_open = 1
         g.is_aes = False
         self.other_import()
         return None
@@ -54,7 +62,7 @@ class panelSetup:
         if g.o:
             s_path = 'BTPanel/static/other/{}'
             css_name = "css/{}.css".format(g.o)
-            css_file = s_path.format(css_name)          
+            css_file = s_path.format(css_name)
             if os.path.exists(css_file): g.other_css.append('/static/other/{}'.format(css_name))
             
             js_name = "js/{}.js".format(g.o)
@@ -141,7 +149,7 @@ class panelAdmin(panelSetup):
             if not 'login' in session:
                 api_check = self.get_sk()
                 if api_check:
-                    session.clear()
+                    # session.clear()
                     return api_check
                 g.api_request = True
             else:
@@ -164,39 +172,28 @@ class panelAdmin(panelSetup):
                     return redirect('/login')
                 
             if api_check:
-                try:
-                    sess_out_path = 'data/session_timeout.pl'
-                    sess_input_path = 'data/session_last.pl'
-                    if not os.path.exists(sess_out_path):
-                        public.writeFile(sess_out_path, '86400')
-                    if not os.path.exists(sess_input_path):
-                        public.writeFile(
-                            sess_input_path, str(int(time.time())))
-                    session_timeout = int(public.readFile(sess_out_path))
-                    session_last = int(public.readFile(sess_input_path))
-                    if time.time() - session_last > session_timeout:
-                        os.remove(sess_input_path)
-                        session['login'] = False
-                        cache.set('dologin', True)
-                        session.clear()
-                        return redirect('/login')
-                    public.writeFile(sess_input_path, str(int(time.time())))
-                except:
-                    pass
-
-            filename = '/www/server/panel/data/login_token.pl'
-            if os.path.exists(filename):
-                token = public.readFile(filename).strip()
-                if 'login_token' in session:
-                    if session['login_token'] != token:
-                        session.clear()
-                        return redirect('/login?dologin=True&go=1')
-            if api_check:
-                filename = 'data/sess_files/' + public.get_sess_key()
-                if not os.path.exists(filename):
+                now_time = time.time()
+                session_timeout = session.get('session_timeout',0)
+                if session_timeout < now_time and session_timeout != 0:
                     session.clear()
-                    return redirect('/login?dologin=True&go=2')
+                    return redirect('/login?dologin=True&go=0')
+        
+            login_token = session.get('login_token','')
+            if login_token:
+                if login_token != public.get_login_token_auth():
+                    session.clear()
+                    return redirect('/login?dologin=True&go=1')
+            
+            # if api_check:
+            #     filename = 'data/sess_files/' + public.get_sess_key()
+            #     if not os.path.exists(filename):
+            #         session.clear()
+            #         return redirect('/login?dologin=True&go=2')
+
+            # 标记新的会话过期时间
+            session['session_timeout'] = time.time() + public.get_session_timeout()
         except:
+            public.WriteLog('登录检查', public.get_error_info())
             session.clear()
             return redirect('/login')
 
@@ -204,30 +201,30 @@ class panelAdmin(panelSetup):
     def get_sk(self):
         save_path = '/www/server/panel/config/api.json'
         if not os.path.exists(save_path):
-            return redirect('/login')
+            return public.error_not_login('/login')
 
         
         try:
             api_config = json.loads(public.ReadFile(save_path))
         except:
             os.remove(save_path)
-            return redirect('/login')
+            return  public.error_not_login('/login')
         
         if not api_config['open']:
-            return redirect('/login')
+            return  public.error_not_login('/login')
         from BTPanel import get_input
         get = get_input()
         client_ip = public.GetClientIp()
         if not 'client_bind_token' in get:
             if not 'request_token' in get or not 'request_time' in get:
-                return redirect('/login')
+                return  public.error_not_login('/login')
             
             num_key = client_ip + '_api'
             if not public.get_error_num(num_key,20):
                 return public.returnJson(False,'连续20次验证失败,禁止1小时')
 
 
-            if not client_ip in api_config['limit_addr']:
+            if not public.is_api_limit_ip(api_config['limit_addr'],client_ip): #client_ip in api_config['limit_addr']:
                 public.set_error_num(num_key)
                 return public.returnJson(False, 'IP校验失败,您的访问IP为['+client_ip+']')
         else:
@@ -235,6 +232,11 @@ class panelAdmin(panelSetup):
             if not public.get_error_num(num_key,20):
                 return public.returnJson(False,'连续20次验证失败,禁止1小时')
             a_file = '/dev/shm/' + get.client_bind_token
+            
+            if not public.path_safe_check(get.client_bind_token):
+                public.set_error_num(num_key)
+                return public.returnJson(False, '非法请求')
+
             if not os.path.exists(a_file):
                 import panelApi
                 if not panelApi.panelApi().get_app_find(get.client_bind_token):
@@ -253,7 +255,7 @@ class panelAdmin(panelSetup):
             
             get = get_input()
             if not 'request_token' in get or not 'request_time' in get:
-                return redirect('/login')
+                return  public.error_not_login('/login')
             g.is_aes = True
             g.aes_key = api_config['key']
         

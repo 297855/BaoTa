@@ -6,7 +6,7 @@
 # +-------------------------------------------------------------------
 # | Author: hwliang <hwl@bt.cn>
 # +-------------------------------------------------------------------
-from BTPanel import session,request
+from BTPanel import session,request,cache
 import public,os,json,time,apache,psutil
 class ajax:
 
@@ -333,6 +333,37 @@ class ajax:
     def get_load_average(self,get):
         data = public.M('load_average').dbfile('system').where("addtime>=? AND addtime<=?",(get.start,get.end)).field('id,pro,one,five,fifteen,addtime').order('id asc').select()
         return self.ToAddtime(data)
+
+
+    def get_process_tops(self,get):
+        '''
+            @name 获取进程开销排行
+            @author hwliang<2021-09-07>
+            @param get<dict_obj>{
+                start: int<开始时间>
+                end: int<结束时间>
+            }
+            @return list
+        '''
+        data = public.M('process_tops').dbfile('system').where("addtime>=? AND addtime<=?",(get.start,get.end)).field('id,process_list,addtime').order('id asc').select()
+        return self.ToAddtime(data)
+
+    
+    def get_process_cpu_high(self,get):
+        '''
+            @name 获取CPU占用高的进程列表
+            @author hwliang<2021-09-07>
+            @param get<dict_obj>{
+                start: int<开始时间>
+                end: int<结束时间>
+            }
+            @return list
+        '''
+        data = public.M('process_high_percent').dbfile('system').where("addtime>=? AND addtime<=?",(get.start,get.end)).field('id,name,pid,cmdline,cpu_percent,memory,cpu_time_total,addtime').order('id asc').select()
+        return self.ToAddtime(data)
+
+
+
     
     
     def ToAddtime(self,data,tomem = False):
@@ -349,12 +380,16 @@ class ajax:
         if length > 10000: he = 15
         if he == 1:
             for i in range(length):
-                data[i]['addtime'] = time.strftime('%m/%d %H:%M',time.localtime(float(data[i]['addtime'])))
-                if tomem and data[i]['mem'] > 100: data[i]['mem'] = data[i]['mem'] / mPre
-                if tomem in [None]:
-                    if type(data[i]['down_packets']) == str:
-                        data[i]['down_packets'] = json.loads(data[i]['down_packets'])
-                        data[i]['up_packets'] = json.loads(data[i]['up_packets'])
+                try:
+                    data[i]['addtime'] = time.strftime('%m/%d %H:%M',time.localtime(float(data[i]['addtime'])))
+                    if 'process_list' in data[i]:
+                        data[i]['process_list'] = json.loads(data[i]['process_list'])
+                    if tomem and data[i]['mem'] > 100: data[i]['mem'] = data[i]['mem'] / mPre
+                    if tomem in [None]:
+                        if type(data[i]['down_packets']) == str:
+                            data[i]['down_packets'] = json.loads(data[i]['down_packets'])
+                            data[i]['up_packets'] = json.loads(data[i]['up_packets'])
+                except: continue
             return data
         else:
             count = 0
@@ -363,14 +398,16 @@ class ajax:
                 if count < he: 
                     count += 1
                     continue
-                value['addtime'] = time.strftime('%m/%d %H:%M',time.localtime(float(value['addtime'])))
-                if tomem and value['mem'] > 100: value['mem'] = value['mem'] / mPre
-                if tomem in [None]:
-                    if type(value['down_packets']) == str:
-                        value['down_packets'] = json.loads(value['down_packets'])
-                        value['up_packets'] = json.loads(value['up_packets'])
-                tmp.append(value)
-                count = 0
+                try:
+                    value['addtime'] = time.strftime('%m/%d %H:%M',time.localtime(float(value['addtime'])))
+                    if tomem and value['mem'] > 100: value['mem'] = value['mem'] / mPre
+                    if tomem in [None]:
+                        if type(value['down_packets']) == str:
+                            value['down_packets'] = json.loads(value['down_packets'])
+                            value['up_packets'] = json.loads(value['up_packets'])
+                    tmp.append(value)
+                    count = 0
+                except: continue
             return tmp
         
     def GetInstalleds(self,softlist):
@@ -499,10 +536,11 @@ class ajax:
                 session['updateInfo'] = updateInfo
                 
             #检查是否需要升级
-            if updateInfo['is_beta'] == 1:
-                if updateInfo['beta']['version'] ==session['version']: return public.returnMsg(False,updateInfo)
-            else:
-                if updateInfo['version'] ==session['version']: return public.returnMsg(False,updateInfo)
+            if not hasattr(get,'toUpdate'):
+                if updateInfo['is_beta'] == 1:
+                    if updateInfo['beta']['version'] == session['version']: return public.returnMsg(False,updateInfo)
+                else:
+                    if updateInfo['version'] == session['version']: return public.returnMsg(False,updateInfo)
             
             
             #是否执行升级程序 
@@ -515,11 +553,10 @@ class ajax:
                 public.downloadFile(updateInfo['downUrl'],'panel.zip')
                 if os.path.getsize('panel.zip') < 1048576: return public.returnMsg(False,"PANEL_UPDATE_ERR_DOWN")
                 public.ExecShell('unzip -o panel.zip -d ' + setupPath + '/')
-                import compileall
                 if os.path.exists('/www/server/panel/runserver.py'): public.ExecShell('rm -f /www/server/panel/*.pyc')
                 if os.path.exists('/www/server/panel/class/common.py'): public.ExecShell('rm -f /www/server/panel/class/*.pyc')
                 
-                if os.path.exists('panel.zip'):os.remove("panel.zip")
+                if os.path.exists('panel.zip'): os.remove("panel.zip")
                 session['version'] = updateInfo['version']
                 if 'getCloudPlugin' in session: del(session['getCloudPlugin'])
                 if updateInfo['is_beta'] == 1: self.to_beta()
@@ -538,7 +575,6 @@ class ajax:
             return public.returnMsg(True,updateInfo)
         except Exception as ex:
             return public.get_error_info()
-            return public.returnMsg(False,"CONNECT_ERR")
          
     #检查是否安装任何
     def CheckInstalled(self,get):
@@ -568,19 +604,25 @@ class ajax:
         phpini = public.readFile(filename)
         data = {}
         rep = "disable_functions\s*=\s{0,1}(.*)\n"
-        tmp = re.search(rep,phpini).groups()
-        data['disable_functions'] = tmp[0]
+
+        tmp = re.search(rep,phpini)
+        if tmp:
+            data['disable_functions'] = tmp.groups()[0]
         
         rep = "upload_max_filesize\s*=\s*([0-9]+)(M|m|K|k)"
-        tmp = re.search(rep,phpini).groups()
-        data['max'] = tmp[0]
+
+        tmp = re.search(rep,phpini)
+        if tmp:
+            data['max'] = tmp.groups()[0]
         
         rep = u"\n;*\s*cgi\.fix_pathinfo\s*=\s*([0-9]+)\s*\n"
-        tmp = re.search(rep,phpini).groups()
-        if tmp[0] == '0':
-            data['pathinfo'] = False
-        else:
-            data['pathinfo'] = True
+        tmp = re.search(rep,phpini)
+        if tmp:
+            if tmp.groups()[0] == '0':
+                data['pathinfo'] = False
+            else:
+                data['pathinfo'] = True
+
         self.getCloudPHPExt(get)
         phplib = json.loads(public.readFile('data/phplib.conf'))
         libs = []
@@ -758,6 +800,22 @@ class ajax:
                 fw.DelAcceptPort(get)
         return public.returnMsg(True, 'SET_PORT_SUCCESS')
 
+    def _get_phpmyadmin_auth(self):
+        import re
+        nginx_conf = '/www/server/nginx/conf/nginx.conf'
+        reg = '#AUTH_START(.|\n)*#AUTH_END'
+        if os.path.exists(nginx_conf):
+            nginx_conf = public.readFile(nginx_conf)
+            auth_tmp = re.search(reg, nginx_conf)
+            if auth_tmp:
+                return True
+        apache_conf = '/www/server/apache/conf/extra/httpd-vhosts.conf'
+        if os.path.exists(apache_conf):
+            apache_conf = public.readFile(apache_conf)
+            auth_tmp = re.search(reg, apache_conf)
+            if auth_tmp:
+                return True
+
     # 设置phpmyadmin ssl
     def set_phpmyadmin_ssl(self,get):
         if public.get_webserver() == "openlitespeed":
@@ -765,6 +823,15 @@ class ajax:
         if not os.path.exists("/www/server/panel/ssl/certificate.pem"):
             return public.returnMsg(False,'面板证书不存在，请申请面板证书后再试')
         if get.v == "1":
+            # 获取auth信息
+            auth = ""
+            if self._get_phpmyadmin_auth():
+                auth = """
+        #AUTH_START
+        auth_basic "Authorization";
+        auth_basic_user_file /www/server/pass/phpmyadmin.pass;
+        #AUTH_END
+"""
         # nginx配置文件
             ssl_conf = """server
     {
@@ -783,6 +850,7 @@ class ajax:
         ssl_session_timeout 10m;
         error_page 497  https://$host$request_uri;
         #SSL-END
+        %s
         include enable-php.conf;
         location ~ .*\.(gif|jpg|jpeg|png|bmp|swf)$
         {
@@ -797,12 +865,20 @@ class ajax:
             deny all;
         }
         access_log  /www/wwwlogs/access.log;
-    }"""
+    }""" % auth
             public.writeFile("/www/server/panel/vhost/nginx/phpmyadmin.conf",ssl_conf)
             import panelPlugin
             get.sName = "phpmyadmin"
             v = panelPlugin.panelPlugin().get_soft_find(get)
-            public.writeFile("/tmp/2",str(v["ext"]["phpversion"]))
+            if self._get_phpmyadmin_auth():
+                auth = """
+        #AUTH_START
+        AuthType basic
+        AuthName "Authorization "
+        AuthUserFile /www/server/pass/phpmyadmin.pass
+        Require user jose
+        #AUTH_END
+            """
             # apache配置
             ssl_conf = '''Listen 887
 <VirtualHost *:887>
@@ -834,13 +910,14 @@ class ajax:
     
     #PATH
     <Directory "/www/wwwroot/bt.youbadbad.cn/">
+{}
        SetOutputFilter DEFLATE
        Options FollowSymLinks
        AllowOverride All
        Require all granted
        DirectoryIndex index.php index.html index.htm default.php default.html default.htm
     </Directory>
-</VirtualHost>'''.format(public.get_php_proxy(v["ext"]["phpversion"],'apache'))
+</VirtualHost>'''.format(public.get_php_proxy(v["ext"]["phpversion"],'apache'),auth)
             public.writeFile("/www/server/panel/vhost/apache/phpmyadmin.conf", ssl_conf)
         else:
             if os.path.exists("/www/server/panel/vhost/nginx/phpmyadmin.conf"):
@@ -858,6 +935,8 @@ class ajax:
         import re
         #try:
         filename = self.__get_webserver_conffile()
+        if public.get_webserver() == 'openlitespeed':
+            filename = "/www/server/panel/vhost/openlitespeed/detail/phpmyadmin.conf"
         conf = public.readFile(filename)
         if not conf: return public.returnMsg(False,'ERROR')
         if hasattr(get,'port'):
@@ -923,12 +1002,44 @@ class ajax:
                 return panelSite.panelSite().SetHasPwd(get)
         
         if hasattr(get,'status'):
-            if conf.find(public.GetConfigValue('setup_path') + '/stop') != -1:
-                conf = conf.replace(public.GetConfigValue('setup_path') + '/stop',public.GetConfigValue('setup_path') + '/phpmyadmin')
+            pma_path = public.GetConfigValue('setup_path') + '/phpmyadmin'
+            stop_path = public.GetConfigValue('setup_path') + '/stop'
+
+
+            webserver = public.get_webserver()
+            if conf.find(stop_path) != -1:
+                conf = conf.replace(stop_path,pma_path)
                 msg = public.getMsg('START')
+            
+            if webserver == 'nginx':
+                sub_string = '''{};
+        allow 127.0.0.1;
+        allow ::1;
+        deny all'''.format(pma_path)
+                if conf.find(sub_string) != -1:
+                    conf = conf.replace(sub_string,pma_path)
+                    msg = public.getMsg('START')
+                else:
+                    conf = conf.replace(pma_path,sub_string)
+                    msg = public.getMsg('STOP')
+            elif webserver == 'apache':
+                src_string = 'AllowOverride All'
+                sub_string = '''{}
+        Deny from all
+        Allow from 127.0.0.1 ::1 localhost'''.format(src_string,pma_path)
+                if conf.find(sub_string) != -1:
+                    conf = conf.replace(sub_string,src_string)
+                    msg = public.getMsg('START')
+                else:
+                    conf = conf.replace(src_string,sub_string)
+                    msg = public.getMsg('STOP')
             else:
-                conf = conf.replace(public.GetConfigValue('setup_path') + '/phpmyadmin',public.GetConfigValue('setup_path') + '/stop')
-                msg = public.getMsg('STOP')
+                if conf.find(stop_path) != -1:
+                    conf = conf.replace(stop_path,pma_path)
+                    msg = public.getMsg('START')
+                else:
+                    conf = conf.replace(pma_path,stop_path)
+                    msg = public.getMsg('STOP')
             
             public.writeFile(filename,conf)
             public.serviceReload()
@@ -1100,6 +1211,108 @@ class ajax:
     def GetOpeLogs(self,get):
         if not os.path.exists(get.path): return public.returnMsg(False,'AJAX_LOG_FILR_NOT_EXISTS')
         return public.returnMsg(True,public.GetNumLines(get.path,1000))
+
+    def get_pd(self,get):
+        from BTPanel import cache
+        tmp = -1
+        try:
+            import panelPlugin
+            # get = public.dict_obj()
+            # get.init = 1
+            tmp1 = panelPlugin.panelPlugin().get_cloud_list(get)
+        except:
+            tmp1 = None
+        if tmp1:
+            tmp = tmp1[public.to_string([112, 114, 111])]
+            ltd = tmp1.get('ltd', -1)
+        else:
+            ltd = -1
+            tmp4 = cache.get(public.to_string([112, 95, 116, 111, 107, 101, 110]))
+            if tmp4:
+                tmp_f = public.to_string([47, 116, 109, 112, 47]) + tmp4
+                if not os.path.exists(tmp_f): public.writeFile(tmp_f, '-1')
+                tmp = public.readFile(tmp_f)
+                if tmp: tmp = int(tmp)
+        if not ltd: ltd = -1
+        if tmp == None: tmp = -1
+        if ltd < 1:
+            if ltd == -2:
+                tmp3 = public.to_string([60, 115, 112, 97, 110, 32, 99, 108, 97, 115, 115, 61, 34, 98, 116, 108, 116, 100,
+                                        45, 103, 114, 97, 121, 34, 62, 60, 115, 112, 97, 110, 32, 115, 116, 121, 108, 101,
+                                        61, 34, 99, 111, 108, 111, 114, 58, 32, 35, 102, 99, 54, 100, 50, 54, 59, 102, 111,
+                                        110, 116, 45, 119, 101, 105, 103, 104, 116, 58, 32, 98, 111, 108, 100, 59, 109, 97,
+                                        114, 103, 105, 110, 45, 114, 105, 103, 104, 116, 58, 53, 112, 120, 34, 62, 24050,
+                                        36807,
+                                        26399, 60, 47, 115, 112, 97, 110, 62, 60, 97, 32, 99, 108, 97, 115, 115, 61, 34,
+                                        98, 116,
+                                        108, 105, 110, 107, 34, 32, 111, 110, 99, 108, 105, 99, 107, 61, 34, 98, 116, 46,
+                                        115, 111,
+                                        102, 116, 46, 117, 112, 100, 97, 116, 97, 95, 108, 116, 100, 40, 41, 34, 62, 32493,
+                                        36153, 60, 47, 97, 62, 60, 47, 115, 112, 97, 110, 62])
+            elif tmp == -1:
+                tmp3 = public.to_string([60, 115, 112, 97, 110, 32, 99, 108, 97, 115, 115, 61, 34, 98,
+                                        116, 112, 114, 111, 45, 102, 114, 101, 101, 34, 32, 111, 110, 99, 108, 105, 99,
+                                        107,
+                                        61, 34, 98, 116, 46, 115, 111, 102, 116, 46, 117, 112, 100, 97, 116, 97, 95, 99,
+                                        111, 109, 109, 101, 114, 99, 105, 97, 108, 95, 118, 105, 101, 119, 40, 41, 34,
+                                        32, 116, 105, 116, 108, 101, 61, 34, 28857, 20987, 21319, 32423, 21040,
+                                        21830, 19994, 29256, 34, 62, 20813, 36153, 29256, 60, 47, 115, 112, 97, 110, 62])
+            elif tmp == -2:
+                tmp3 = public.to_string([60, 115, 112, 97, 110, 32, 99, 108, 97, 115, 115, 61, 34, 98, 116,
+                                        112, 114, 111, 45, 103, 114, 97, 121, 34, 62, 60, 115, 112, 97, 110, 32,
+                                        115, 116, 121, 108, 101, 61, 34, 99, 111, 108, 111, 114, 58, 32, 35,
+                                        102, 99, 54, 100, 50, 54, 59, 102, 111, 110, 116, 45, 119, 101, 105, 103,
+                                        104, 116, 58, 32, 98, 111, 108, 100, 59, 109, 97, 114, 103, 105, 110, 45,
+                                        114, 105, 103, 104, 116, 58, 53, 112, 120, 34, 62, 24050, 36807, 26399,
+                                        60, 47, 115, 112, 97, 110, 62, 60, 97, 32, 99, 108, 97, 115, 115, 61, 34,
+                                        98, 116, 108, 105, 110, 107, 34, 32, 111, 110, 99, 108, 105, 99, 107, 61,
+                                        34, 98, 116, 46, 115, 111, 102, 116, 46, 117, 112, 100, 97, 116, 97, 95,
+                                        112, 114, 111, 40, 41, 34, 62, 32493, 36153, 60, 47, 97, 62, 60,
+                                        47, 115, 112, 97, 110, 62])
+            if tmp >= 0 and ltd in [-1, -2]:
+                if tmp == 0:
+                    tmp2 = public.to_string([27704, 20037, 25480, 26435])
+                    tmp3 = public.to_string([60, 115, 112, 97, 110, 32, 99, 108, 97, 115, 115, 61, 34, 98, 116,
+                                            112, 114, 111, 34, 62, 123, 48, 125, 60, 115, 112, 97, 110, 32, 115, 116,
+                                            121, 108, 101, 61, 34, 99, 111, 108, 111, 114, 58, 32, 35, 102, 99, 54, 100,
+                                            50, 54, 59, 102, 111, 110, 116, 45, 119, 101, 105, 103, 104, 116,
+                                            58, 32, 98, 111, 108, 100, 59, 34, 62, 123, 49, 125, 60, 47, 115,
+                                            112, 97, 110, 62, 60, 47, 115, 112, 97, 110, 62]).format(
+                        public.to_string([21040, 26399, 26102, 38388, 65306]), tmp2)
+                else:
+                    tmp2 = time.strftime(public.to_string([37, 89, 45, 37, 109, 45, 37, 100]), time.localtime(tmp))
+                    tmp3 = public.to_string([60, 115, 112, 97, 110, 32, 99, 108, 97, 115, 115, 61, 34, 98, 116,
+                                            112, 114, 111, 34, 62, 21040, 26399, 26102, 38388, 65306, 60, 115, 112,
+                                            97, 110, 32, 115, 116, 121, 108, 101, 61, 34, 99, 111, 108, 111, 114,
+                                            58, 32, 35, 102, 99, 54, 100, 50, 54, 59, 102, 111, 110, 116, 45, 119,
+                                            101, 105, 103, 104, 116, 58, 32, 98, 111, 108, 100, 59, 109, 97, 114,
+                                            103, 105, 110, 45, 114, 105, 103, 104, 116, 58, 53, 112, 120, 34, 62, 123,
+                                            48, 125, 60, 47, 115, 112, 97, 110, 62, 60, 97, 32, 99, 108, 97, 115,
+                                            115, 61, 34, 98, 116, 108, 105, 110, 107, 34, 32, 111, 110, 99, 108, 105, 99,
+                                            107, 61, 34, 98, 116, 46, 115, 111, 102, 116, 46, 117, 112, 100, 97,
+                                            116, 97, 95, 112, 114, 111, 40, 41, 34, 62, 32493, 36153, 60, 47, 97, 62, 60,
+                                            47, 115, 112, 97, 110, 62]).format(tmp2)
+            else:
+                tmp3 = public.to_string([60, 115, 112, 97, 110, 32, 99, 108, 97, 115, 115, 61, 34, 98, 116, 112,
+                                        114, 111, 45, 103, 114, 97, 121, 34, 32, 111, 110, 99, 108, 105, 99, 107,
+                                        61, 34, 98, 116, 46, 115, 111, 102, 116, 46, 117, 112, 100, 97, 116, 97,
+                                        95, 112, 114, 111, 40, 41, 34, 32, 116, 105, 116, 108, 101, 61, 34, 28857,
+                                        20987, 21319, 32423, 21040, 19987, 19994, 29256, 34, 62, 20813, 36153,
+                                        29256, 60, 47, 115, 112, 97, 110, 62])
+        else:
+            tmp3 = public.to_string([60, 115, 112, 97, 110, 32, 99, 108, 97, 115, 115, 61, 34, 98, 116, 108, 116,
+                                    100, 34, 62, 21040, 26399, 26102, 38388, 65306, 60, 115, 112, 97, 110, 32, 115, 116,
+                                    121, 108, 101, 61, 34, 99, 111, 108, 111, 114, 58, 32, 35, 102, 99, 54, 100, 50,
+                                    54, 59, 102, 111, 110, 116, 45, 119, 101, 105, 103, 104, 116, 58, 32, 98, 111,
+                                    108, 100, 59, 109, 97, 114, 103, 105, 110, 45, 114, 105, 103, 104, 116, 58, 53,
+                                    112, 120, 34, 62, 123, 125, 60, 47, 115, 112, 97, 110, 62, 60, 97, 32, 99, 108,
+                                    97, 115, 115, 61, 34, 98, 116, 108, 105, 110, 107, 34, 32, 111, 110, 99, 108, 105,
+                                    99, 107, 61, 34, 98, 116, 46, 115, 111, 102, 116, 46, 117, 112, 100, 97, 116, 97,
+                                    95, 108, 116, 100, 40, 41, 34, 62, 32493, 36153, 60, 47, 97, 62, 60, 47, 115,
+                                    112, 97, 110, 62]).format(
+                time.strftime(public.to_string([37, 89, 45, 37, 109, 45, 37, 100]), time.localtime(ltd)))
+
+        return tmp3, tmp, ltd
     
     #检查用户绑定是否正确
     def check_user_auth(self,get):
@@ -1130,9 +1343,10 @@ class ajax:
             php_path = '/usr/local/lsws/lsphp'
         php_bin = php_path + php_version + '/bin/php'
         php_ini = php_path + php_version + '/etc/php.ini'
-        if not os.path.exists('/etc/redhat-release'):
-            php_ini = php_path + php_version + '/etc/php/'+args.php_version+'/litespeed/php.ini'
-        tmp = public.ExecShell(php_bin + ' /www/server/panel/class/php_info.php')[0]
+        php_ini_lit = "/www/server/php/80/etc/php/80/litespeed/php.ini"
+        if os.path.exists(php_ini_lit):
+            php_ini = php_ini_lit
+        tmp = public.ExecShell(php_bin + ' -c {} /www/server/panel/class/php_info.php'.format(php_ini))[0]
         if tmp.find('Warning: JIT is incompatible') != -1:
             tmp = tmp.strip().split('\n')[-1]
         result = json.loads(tmp)
@@ -1155,4 +1369,87 @@ class ajax:
         s_body = public.ExecShell("tail -n {} {}".format(args.num,args.filename))[0]
         return public.returnMsg(True,s_body)
         
+    def log_analysis(self,get):
+        import log_analysis
+        log_analysis=log_analysis.log_analysis()
+        return log_analysis.log_analysis(get)
+
+
+    def speed_log(self,get):
+        import log_analysis
+        log_analysis=log_analysis.log_analysis()
+        return log_analysis.speed_log(get)
+
+
+
+    def get_result(self,get):
+        import log_analysis
+        log_analysis=log_analysis.log_analysis()
+        return log_analysis.get_result(get)
+
+    def get_detailed(self,get):
+        import log_analysis
+        log_analysis=log_analysis.log_analysis()
+        return log_analysis.get_detailed(get)
+
+    def download_pay_type(self,path):
+        public.downloadFile(public.get_url() + '/install/lib/pay_type.json',path)
+        return True
+
+    def get_pay_type(self,get):
+        """
+            @name 获取推荐列表
+        """
+        spath = '{}/data/pay_type.json'.format(public.get_panel_path())
+        down = cache.get('pay_type')
+        if not down:
+            public.run_thread(self.download_pay_type,(spath,))
+            cache.set('pay_type',1,86400)
+        try:
+            data = json.loads(public.readFile("data/pay_type.json"))
+        except :
+            data = {}
+
+        import panelPlugin
+        plu_panel =  panelPlugin.panelPlugin()
+        plugin_list = plu_panel.get_cloud_list()
+        if not 'pro' in plugin_list: plugin_list['pro'] = -1
         
+        for item in data:
+            if 'list' in item:
+                item['list'] = self.__get_home_list(item['list'],item['type'],plugin_list,plu_panel)    
+                if item['type'] == 1:
+                    if len(item['list']) > 4: item['list'] = item['list'][:4]    
+            if item['type'] == 0 and plugin_list['pro'] >= 0:
+                item['show'] = False                    
+        return data
+
+
+    def __get_home_list(self,sList,stype,plugin_list,plu_panel):  
+        """
+            @name 获取首页软件列表推荐
+        """
+        nList = []
+        webserver = public.get_webserver()       
+        for x in sList:
+            for plugin_info in plugin_list['list']:
+                if x['name'] == plugin_info['name']:
+                    if not 'endtime' in plugin_info or plugin_info['endtime'] >= 0:
+                        x['isBuy'] = True
+            is_check = False
+            if 'dependent' in x :
+                if  x['dependent'] == webserver: is_check = True                           
+            else:
+                is_check = True
+            if is_check:                
+                info = plu_panel.get_soft_find(x['name'])
+                if info:
+                    if stype == 1:   
+                        if plugin_list['pro'] >=0: continue                            
+                        if not info['setup']:                        
+                            x['install'] = info['setup']
+                            nList.append(x) 
+                    else:                       
+                        x['install'] = info['setup']
+                        nList.append(x) 
+        return nList

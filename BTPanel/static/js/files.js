@@ -6,7 +6,7 @@ var bt_file = {
     file_table_arry: [], // 选中的文件列表
     timerM: null, // 定时器
     is_update_down_list: true,
-    is_recycle: false, // 是否开启回收站
+    is_recycle: bt.get_cookie('file_recycle_status') || false, // 是否开启回收站
     is_editor: false, // 是否处于重命名、新建编辑状态
     file_header: { 'file_checkbox': 40, 'file_name': 'auto', 'file_accept': 120, 'file_size': 90, 'file_mtime': 145, 'file_ps': 'auto', 'file_operation': 350, 'file_tr': 0, 'file_list_header': 0 },
     file_operating: [], // 文件操作记录，用于前进或后退
@@ -21,7 +21,9 @@ var bt_file = {
     file_present_task: null,
     file_selection_operating: {},
     file_share_list: [],
+    recomConfig:{},  //推荐软件
     scroll_width: (function() {
+        
         // 创建一个div元素
         var noScroll, scroll, oDiv = document.createElement('DIV');
         oDiv.style.cssText = 'position:absolute; top:-1000px; width:100px; height:100px; overflow:hidden;';
@@ -45,7 +47,7 @@ var bt_file = {
         GetDiskInfo: ['system', '获取磁盘列表'],
         CheckExistsFiles: '检测同名文件是否存在',
         GetFileAccess: '获取文件权限信息',
-        SetFileAccess: lan.public.config,
+        SetFileAccess: lan['public'].config,
         DelFileAccess: '正在删除用户',
         get_path_size: '获取文件目录大小',
         add_files_store_types: '创建收藏夹分类',
@@ -61,507 +63,27 @@ var bt_file = {
         CopyFile: '复制文件',
         MvFile: '剪切文件',
         SetBatchData: '执行批量操作',
-        Get_Recycle_bin: '回收站列表',
         BatchPaste: '粘贴中'
     },
-    file_drop: {
-        f_path: null,
-        startTime: 0,
-        endTime: 0,
-        uploadLength: 0, //上传数量
-        splitSize: 1024 * 1024 * 2, //文件上传分片大小
-        splitEndTime: 0,
-        splitStartTime: 0,
-        fileSize: 0,
-        speedLastTime: 0,
-        filesList: [], // 文件列表数组
-        errorLength: 0, //上传失败文件数量
-        isUpload: true, //上传状态，是否可以上传
-        uploadSuspend: [], //上传暂停参数
-        isUploadNumber: 800, //限制单次上传数量
-        uploadAllSize: 0, // 上传文件总大小
-        uploadedSize: 0, // 已上传文件大小
-        updateedSizeLast: 0,
-        topUploadedSize: 0, // 上一次文件上传大小
-        uploadExpectTime: 0, // 预计上传时间
-        initTimer: 0, // 初始化计时
-        speedInterval: null, //平局速度定时器
-        timerSpeed: 0, //速度
-        isLayuiDrop: false, //是否是小窗口拖拽
-        uploading: false,
-        is_webkit: (function() {
-            if (navigator.userAgent.indexOf('WebKit') > -1) return true;
-            return false;
-        })(),
-        init: function() {
-            if ($('#mask_layer').length == 0) {
-                window.UploadFiles = function() { bt_file.file_drop.dialog_view() };
-                $("body").append($('<div class="mask_layer" id="mask_layer" style="position:fixed;top:0;left:0;right:0;bottom:0; background:rgba(255,255,255,0.6);border:3px #ccc dashed;z-index:99999999;display:none;color:#999;font-size:40px;text-align:center;overflow:hidden;"><span style="position: absolute;top: 50%;left: 50%;margin-left: -300px;margin-top: -40px;">' + (!this.is_webkit ? '<i style="font-size:20px;font-style:normal;display:block;margin-top:15px;color:red;">当前浏览器暂不支持拖动上传，推荐使用Chrome浏览器或WebKit内核的浏览器。</i>' : '上传文件到当前目录下') + '</span></div>'));
-                this.event_relation(document.querySelector('#container'), document, document.querySelector('#mask_layer'));
-            }
-        },
-        // 事件关联 (进入，离开，放下)
-        event_relation: function(enter, leave, drop) {
-            var that = this,
-                obj = Object.keys(arguments);
-            for (var item in arguments) {
-                if (typeof arguments[item] == "object" && typeof arguments[item].nodeType != 'undefined') {
-                    arguments[item] = {
-                        el: arguments[item],
-                        callback: null
-                    }
-                }
-            }
-            leave.el.addEventListener("dragleave", (leave.callback != null) ? leave.callback : function(e) {
-                if (e.x == 0 && e.y == 0) $('#mask_layer').hide();
-                e.preventDefault();
-            }, false);
-            enter.el.addEventListener("dragenter", (enter.callback != null) ? enter.callback : function(e) {
-                if (e.dataTransfer.items[0].kind == 'string') return false
-                $('#mask_layer').show();
-                that.isLayuiDrop = false;
-                e.preventDefault();
-            }, false);
-            drop.el.addEventListener("dragover", function(e) { e.preventDefault() }, false);
-            drop.el.addEventListener("drop", (enter.callback != null) ? drop.callback : that.ev_drop, false);
-        },
 
-
-        // 事件触发
-        ev_drop: function(e) {
-            if (e.dataTransfer.items[0].kind == 'string') return false;
-            if (!bt_file.file_drop.is_webkit) {
-                $('#mask_layer').hide();
-                return false;
-            }
-            e.preventDefault();
-            if (bt_file.file_drop.uploading) {
-                layer.msg('正在上传文件中，请稍候...');
-                return false;
-            }
-            var items = e.dataTransfer.items,
-                time, num = 0;
-            loadT = layer.msg('正在获取上传文件信息，请稍候...', { icon: 16, time: 0, shade: .3 });
-            bt_file.file_drop.isUpload = true;
-            if (items && items.length && items[0].webkitGetAsEntry != null) {
-                if (items[0].kind != 'file') return false;
-            }
-            if (bt_file.file_drop.filesList == null) bt_file.file_drop.filesList = []
-            for (var i = bt_file.file_drop.filesList.length - 1; i >= 0; i--) {
-                if (bt_file.file_drop.filesList[i].is_upload) bt_file.file_drop.filesList.splice(-i, 1)
-            }
-            $('#mask_layer').hide();
-
-            function update_sync(s) {
-                s.getFilesAndDirectories().then(function(subFilesAndDirs) {
-                    return iterateFilesAndDirs(subFilesAndDirs, s.path);
-                });
-            }
-            var iterateFilesAndDirs = function(filesAndDirs, path) {
-                if (!bt_file.file_drop.isUpload) return false
-                for (var i = 0; i < filesAndDirs.length; i++) {
-                    if (typeof(filesAndDirs[i].getFilesAndDirectories) == 'function') {
-                        update_sync(filesAndDirs[i])
-                    } else {
-                        if (num > bt_file.file_drop.isUploadNumber) {
-                            bt_file.file_drop.isUpload = false;
-                            layer.msg(' ' + bt_file.file_drop.isUploadNumber + '份，无法上传,请压缩后上传!。', { icon: 2, area: '405px' });
-                            bt_file.file_drop.filesList = [];
-                            clearTimeout(time);
-                            return false;
-                        }
-                        bt_file.file_drop.filesList.push({
-                            file: filesAndDirs[i],
-                            path: bt.get_file_path(path + '/' + filesAndDirs[i].name).replace('//', '/'),
-                            name: filesAndDirs[i].name.replace('//', '/'),
-                            icon: bt_file.get_ext_name(filesAndDirs[i].name),
-                            size: bt_file.file_drop.to_size(filesAndDirs[i].size),
-                            upload: 0, //上传状态,未上传：0、上传中：1，已上传：2，上传失败：-1
-                            is_upload: false
-                        });
-                        bt_file.file_drop.uploadAllSize += filesAndDirs[i].size
-                        clearTimeout(time);
-                        time = setTimeout(function() {
-                            layer.close(loadT);
-                            bt_file.file_drop.dialog_view();
-                        }, 100);
-                        num++;
-                    }
-                }
-            }
-            if ('getFilesAndDirectories' in e.dataTransfer) {
-                e.dataTransfer.getFilesAndDirectories().then(function(filesAndDirs) {
-                    return iterateFilesAndDirs(filesAndDirs, '/');
-                });
-            }
-
-        },
-        // 上传视图
-        dialog_view: function(config) {
-            var that = this,
-                html = '';
-            this.f_path = bt_file.file_path;
-            if (!$('.file_dir_uploads').length > 0) {
-                if (that.filesList == null) that.filesList = []
-                for (var i = 0; i < that.filesList.length; i++) {
-                    var item = that.filesList[i];
-                    html += '<li><div class="fileItem"><span class="filename" title="文件路径:' + (item.path + '/' + item.name).replace('//', '/') + '&#10;文件类型:' + item.file.type + '&#10;文件大小:' + item.size + '"><i class="ico ico-' + item.icon + '"></i>' + (item.path + '/' + item.name).replace('//', '/') + '</span><span class="filesize">' + item.size + '</span><span class="fileStatus">' + that.is_upload_status(item.upload) + '</span></div><div class="fileLoading"></div></li>';
-                }
-                var is_show = that.filesList.length > 11;
-                layer.open({
-                    type: 1,
-                    closeBtn: 1,
-                    maxmin: true,
-                    area: ['650px', '605px'],
-                    btn: ['开始上传', '取消上传'],
-                    title: '上传文件到【' + bt.get_cookie('Path') + '】--- 支持断点续传',
-                    skin: 'file_dir_uploads',
-                    content: '<div style="padding:15px 15px 10px 15px;"><div class="upload_btn_groud"><div class="btn-group"><button type="button" class="btn btn-primary btn-sm upload_file_btn">上传文件</button><button type="button" class="btn btn-primary  btn-sm dropdown-toggle" data-toggle="dropdown" aria-haspopup="true" aria-expanded="false"><span class="caret"></span><span class="sr-only">Toggle Dropdown</span></button><ul class="dropdown-menu"><li><a href="#" data-type="file">上传文件</a></li><li><a href="#" data-type="dir">上传目录</a></li></ul></div><div class="file_upload_info" style="display:none;"><span>总进度&nbsp;<i class="uploadProgress"></i>,正在上传&nbsp;<i class="uploadNumber"></i>,</span><span style="display:none">上传失败&nbsp;<i class="uploadError"></i></span><span>上传速度&nbsp;<i class="uploadSpeed">获取中</i>,</span><span>预计上传时间&nbsp;<i class="uploadEstimate">获取中</i></span><i></i></div></div><div class="upload_file_body ' + (html == '' ? 'active' : '') + '">' + (html != '' ? ('<ul class="dropUpLoadFileHead" style="padding-right:' + (is_show ? '15' : '0') + 'px"><li class="fileTitle"><span class="filename">文件名</span><span class="filesize">文件大小</span><span class="fileStatus">上传状态</span></li></ul><ul class="dropUpLoadFile list-list">' + html + '</ul>') : '<span>' + (!that.is_webkit ? '<i style="display: block;font-style: normal;margin-top: 10px;color: red;font-size: 17px;">当前浏览器暂不支持拖动上传，推荐使用Chrome浏览器或WebKit内核的浏览器。</i>' : '请将需要上传的文件拖到此处') + '</span>') + '</div></div>',
-                    success: function() {
-                        $('#mask_layer').hide();
-                        $('.file_dir_uploads .layui-layer-max').hide();
-                        $('.upload_btn_groud .upload_file_btn').click(function() { $('.upload_btn_groud .dropdown-menu [data-type=file]').click() });
-                        $('.upload_btn_groud .dropdown-menu a').click(function() {
-                            var type = $(this).attr('data-type');
-                            $('<input type="file" multiple="true" autocomplete="off" ' + (type == 'dir' ? 'webkitdirectory=""' : '') + ' />').change(function(e) {
-                                var files = e.target.files,
-                                    arry = [];
-                                for (var i = 0; i < files.length; i++) {
-                                    var config = {
-                                        file: files[i],
-                                        path: bt.get_file_path('/' + files[i].webkitRelativePath).replace('//', '/'),
-                                        icon: bt_file.get_ext_name(files[i].name),
-                                        name: files[i].name.replace('//', '/'),
-                                        size: that.to_size(files[i].size),
-                                        upload: 0, //上传状态,未上传：0、上传中：1，已上传：2，上传失败：-1
-                                        is_upload: true
-                                    }
-                                    that.filesList.push(config);
-                                    bt_file.file_drop.uploadAllSize += files[i].size
-                                }
-                                that.dialog_view(that.filesList);
-                            }).click();
-                        });
-                        var el = '';
-                        that.event_relation({
-                            el: $('.upload_file_body')[0],
-                            callback: function(e) {
-                                if ($(this).hasClass('active')) {
-                                    $(this).css('borderColor', '#4592f0').find('span').css('color', '#4592f0');
-                                }
-                            }
-                        }, {
-                            el: $('.upload_file_body')[0],
-                            callback: function(e) {
-                                if ($(this).hasClass('active')) {
-                                    $(this).removeAttr('style').find('span').removeAttr('style');
-                                }
-                            }
-                        }, {
-                            el: $('.upload_file_body')[0],
-                            callback: function(e) {
-                                var active = $('.upload_file_body');
-                                if (active.hasClass('active')) {
-                                    active.removeAttr('style').find('span').removeAttr('style');
-                                }
-                                that.ev_drop(e);
-                                that.isLayuiDrop = true;
-                            }
-                        });
-                    },
-                    yes: function(index, layero) {
-                        if (!that.uploading) {
-                            if (that.filesList.length == 0) {
-                                layer.msg('请选择上传文件', { icon: 0 });
-                                return false;
-                            }
-                            $('.layui-layer-btn0').css({ 'cursor': 'no-drop', 'background': '#5c9e69' }).attr('data-upload', 'true').text('上传中');
-                            that.upload_file();
-                            that.initTimer = new Date();
-                            that.uploading = true;
-                            //that.get_timer_speed();
-                        }
-                    },
-                    btn2: function(index, layero) {
-                        if (that.uploading) {
-                            layer.confirm('是否取消上传当前列表的文件，若取消上传，已上传的文件，需用户手动删除，是否继续？', { title: '取消上传文件', icon: 0 }, function(indexs) {
-                                layer.close(index);
-                                layer.close(indexs);
-                            });
-                            return false;
-                        } else {
-                            layer.close(index);
-                        }
-                    },
-                    cancel: function(index, layero) {
-                        if (that.uploading) {
-                            layer.confirm('是否取消上传当前列表的文件，若取消上传，已上传的文件，需用户手动删除，是否继续？', { title: '取消上传文件', icon: 0 }, function(indexs) {
-                                layer.close(index);
-                                layer.close(indexs);
-                            });
-                            return false;
-                        } else {
-                            layer.close(index);
-                        }
-                    },
-                    end: function() {
-                        // GetFiles(bt.get_cookie('Path'));
-                        that.clear_drop_stauts(true);
-                    },
-                    min: function() {
-                        $('.file_dir_uploads .layui-layer-max').show();
-                        $('#layui-layer-shade' + $('.file_dir_uploads').attr('times')).fadeOut();
-                    },
-                    restore: function() {
-                        $('.file_dir_uploads .layui-layer-max').hide();
-                        $('#layui-layer-shade' + $('.file_dir_uploads').attr('times')).fadeIn();
-                    }
-                });
-            } else {
-                if (config == undefined && !that.isLayuiDrop) return false;
-                if (that.isLayuiDrop) config = that.filesList;
-                $('.upload_file_body').html('<ul class="dropUpLoadFileHead" style="padding-right:' + (config.length > 11 ? '15' : '0') + 'px"><li class="fileTitle"><span class="filename">文件名</span><span class="filesize">文件大小</span><span class="fileStatus">上传状态</span></li></ul><ul class="dropUpLoadFile list-list"></ul>').removeClass('active');
-                if (Array.isArray(config)) {
-                    for (var i = 0; i < config.length; i++) {
-                        var item = config[i];
-                        html += '<li><div class="fileItem"><span class="filename" title="文件路径:' + item.path + '/' + item.name + '&#10;文件类型:' + item.file.type + '&#10;文件大小:' + item.size + '"><i class="ico ico-' + item.icon + '"></i>' + (item.path + '/' + item.name).replace('//', '/') + '</span><span class="filesize">' + item.size + '</span><span class="fileStatus">' + that.is_upload_status(item.upload) + '</span></div><div class="fileLoading"></div></li>';
-                    }
-                    $('.dropUpLoadFile').append(html);
-                } else {
-                    $('.dropUpLoadFile').append('<li><div class="fileItem"><span class="filename" title="文件路径:' + (config.path + '/' + config.name).replace('//', '/') + '&#10;文件类型:' + config.type + '&#10;文件大小:' + config.size + '"><i class="ico ico-' + config.icon + '"></i>' + (config.path + '/' + config.name).replace('//', '/') + '</span><span class="filesize">' + config.size + '</span><span class="fileStatus">' + that.is_upload_status(config.upload) + '</span></div><div class="fileLoading"></div></li>');
-                }
-
-            }
-        },
-        // 上传单文件状态
-        is_upload_status: function(status, val) {
-            if (val === undefined) val = ''
-            switch (status) {
-                case -1:
-                    return '<span class="upload_info upload_error" title="上传失败' + (val != '' ? ',' + val : '') + '">上传失败' + (val != '' ? ',' + val : '') + '</span>';
-                    break;
-                case 0:
-                    return '<span class="upload_info upload_primary">等待上传</span>';
-                    break;
-                case 1:
-                    return '<span class="upload_info upload_success">上传成功</span>';
-                    break;
-                case 2:
-                    return '<span class="upload_info upload_warning">上传中' + val + '</span>';
-                    break;
-                case 3:
-                    return '<span class="upload_info upload_success">已暂停</span>';
-                    break;
-            }
-        },
-        // 设置上传实时反馈视图
-        set_upload_view: function(index, config) {
-            var item = $('.dropUpLoadFile li:eq(' + index + ')'),
-                that = this;
-            var file_info = $('.file_upload_info');
-            if ($('.file_upload_info .uploadProgress').length == 0) {
-                $('.file_upload_info').html('<span>总进度&nbsp;<i class="uploadProgress"></i>,正在上传&nbsp;<i class="uploadNumber"></i>,</span><span style="display:none">上传失败&nbsp;<i class="uploadError"></i></span><span>上传速度&nbsp;<i class="uploadSpeed">获取中</i>,</span><span>预计上传时间&nbsp;<i class="uploadEstimate">获取中</i></span><i></i>');
-            }
-            file_info.show().prev().hide().parent().css('paddingRight', 0);
-            if (that.errorLength > 0) file_info.find('.uploadError').text('(' + that.errorLength + '份)').parent().show();
-            file_info.find('.uploadNumber').html('(' + that.uploadLength + '/' + that.filesList.length + ')');
-            file_info.find('.uploadProgress').html(((that.uploadedSize / that.uploadAllSize) * 100).toFixed(2) + '%');
-            if (config.upload === 1 || config.upload === -1) {
-                that.filesList[index].is_upload = true;
-                that.uploadLength += 1;
-                item.find('.fileLoading').css({ 'width': '100%', 'opacity': '.5', 'background': config.upload == -1 ? '#ffadad' : '#20a53a21' });
-                item.find('.filesize').text(config.size);
-                item.find('.fileStatus').html(that.is_upload_status(config.upload, (config.upload === 1 ? ('(耗时:' + that.diff_time(that.startTime, that.endTime) + ')') : config.errorMsg)));
-                item.find('.fileLoading').fadeOut(500, function() {
-                    $(this).remove();
-                    var uploadHeight = $('.dropUpLoadFile');
-                    if (uploadHeight.length == 0) return false;
-                    if (uploadHeight[0].scrollHeight > uploadHeight.height()) {
-                        uploadHeight.scrollTop(uploadHeight.scrollTop() + 40);
-                    }
-                });
-            } else {
-                item.find('.fileLoading').css('width', config.percent);
-                item.find('.filesize').text(config.upload_size + '/' + config.size);
-                item.find('.fileStatus').html(that.is_upload_status(config.upload, '(' + config.percent + ')'));
-            }
-        },
-        // 清除上传状态
-        clear_drop_stauts: function(status) {
-            var time = new Date(),
-                that = this;
-            if (!status) {
-                try {
-                    var s_peed = bt_file.file_drop.to_size(bt_file.file_drop.uploadedSize / ((time.getTime() - bt_file.file_drop.initTimer.getTime()) / 1000))
-                    $('.file_upload_info').html('<span>上传成功 ' + this.uploadLength + '个文件,' + (this.errorLength > 0 ? ('上传失败 ' + this.errorLength + '个文件，') : '') + '耗时' + this.diff_time(this.initTimer, time) + ',平均速度 ' + s_peed + '/s</span>').append($('<i class="ico-tips-close"></i>').click(function() {
-                        $('.file_upload_info').hide().prev().show();
-                    }));
-                } catch (e) {
-
-                }
-            }
-            $('.layui-layer-btn0').removeAttr('style data-upload').text('开始上传');
-            $.extend(bt_file.file_drop, {
-                startTime: 0,
-                endTime: 0,
-                uploadLength: 0, //上传数量
-                splitSize: 1024 * 1024 * 2, //文件上传分片大小
-                filesList: [], // 文件列表数组
-                errorLength: 0, //上传失败文件数量
-                isUpload: false, //上传状态，是否可以上传
-                isUploadNumber: 800, //限制单次上传数量
-                uploadAllSize: 0, // 上传文件总大小
-                uploadedSize: 0, // 已上传文件大小
-                topUploadedSize: 0, // 上一次文件上传大小
-                uploadExpectTime: 0, // 预计上传时间
-                initTimer: 0, // 初始化计时
-                speedInterval: null, //平局速度定时器
-                timerSpeed: 0, //速度
-                uploading: false
-            });
-            clearInterval(that.speedInterval);
-        },
-        // 上传文件,文件开始字段，文件编号
-        upload_file: function(fileStart, index) {
-            if (fileStart == undefined && this.uploadSuspend.length == 0) fileStart = 0, index = 0;
-            if (this.filesList.length === index) {
-                clearInterval(this.speedInterval);
-                this.clear_drop_stauts();
-                bt_file.reader_file_list({ path: bt_file.file_path, is_operating: false });
-                return false;
-            }
-            var that = this;
-            that.splitEndTime = new Date().getTime()
-            that.get_timer_speed()
-
-            that.splitStartTime = new Date().getTime()
-            var item = this.filesList[index],
-                fileEnd = '';
-            if (item == undefined) return false;
-            fileEnd = Math.min(item.file.size, fileStart + this.splitSize),
-                that.fileSize = fileEnd - fileStart
-            form = new FormData();
-            if (fileStart == 0) {
-                that.startTime = new Date();
-                item = $.extend(item, { percent: '0%', upload: 2, upload_size: '0B' });
-            }
-            form.append("f_path", this.f_path + item.path);
-            form.append("f_name", item.name);
-            form.append("f_size", item.file.size);
-            form.append("f_start", fileStart);
-            form.append("blob", item.file.slice(fileStart, fileEnd));
-            that.set_upload_view(index, item);
-            $.ajax({
-                url: '/files?action=upload',
-                type: "POST",
-                data: form,
-                async: true,
-                processData: false,
-                contentType: false,
-                success: function(data) {
-                    if (typeof(data) === "number") {
-                        that.set_upload_view(index, $.extend(item, { percent: (((data / item.file.size) * 100).toFixed(2) + '%'), upload: 2, upload_size: that.to_size(data) }));
-                        if (fileEnd != data) {
-                            that.uploadedSize += data;
-                        } else {
-                            that.uploadedSize += parseInt(fileEnd - fileStart);
-                        }
-
-                        that.upload_file(data, index);
-                    } else {
-                        if (data.status) {
-                            that.endTime = new Date();
-                            that.uploadedSize += parseInt(fileEnd - fileStart);
-                            that.set_upload_view(index, $.extend(item, { upload: 1, upload_size: item.size }));
-                            that.upload_file(0, index += 1);
-                        } else {
-                            that.set_upload_view(index, $.extend(item, { upload: -1, errorMsg: data.msg }));
-                            that.errorLength++;
-                        }
-                    }
-
-                },
-                error: function(e) {
-                    if (that.filesList[index].req_error === undefined) that.filesList[index].req_error = 1
-                    if (that.filesList[index].req_error > 2) {
-                        that.set_upload_view(index, $.extend(that.filesList[index], { upload: -1, errorMsg: e.statusText == 'error' ? '网络中断' : e.statusText }));
-                        that.errorLength++;
-                        that.upload_file(fileStart, index += 1)
-                        return false;
-                    }
-                    that.filesList[index].req_error += 1;
-                    that.upload_file(fileStart, index)
-
-
-                }
-            });
-        },
-        // 获取上传速度
-        get_timer_speed: function(speed) {
-            var done_time = new Date().getTime()
-            if (done_time - this.speedLastTime > 1000) {
-                var that = this,
-                    num = 0;
-                if (speed == undefined) speed = 200
-                var s_time = (that.splitEndTime - that.splitStartTime) / 1000;
-                that.timerSpeed = (that.fileSize / s_time).toFixed(2)
-                that.updateedSizeLast = that.uploadedSize
-                if (that.timerSpeed < 2) return;
-
-                $('.file_upload_info .uploadSpeed').text(that.to_size(isNaN(that.timerSpeed) ? 0 : that.timerSpeed) + '/s');
-                var estimateTime = that.time(parseInt(((that.uploadAllSize - that.uploadedSize) / that.timerSpeed) * 1000))
-                if (!isNaN(that.timerSpeed)) $('.file_upload_info .uploadEstimate').text(estimateTime.indexOf('NaN') == -1 ? estimateTime : '0秒');
-                this.speedLastTime = done_time;
-            }
-        },
-        time: function(date) {
-            var hours = Math.floor(date / (60 * 60 * 1000));
-            var minutes = Math.floor(date / (60 * 1000));
-            var seconds = parseInt((date % (60 * 1000)) / 1000);
-            var result = seconds + '秒';
-            if (minutes > 0) {
-                result = minutes + "分钟" + seconds + '秒';
-            }
-            if (hours > 0) {
-                result = hours + '小时' + Math.floor((date - (hours * (60 * 60 * 1000))) / (60 * 1000)) + "分钟";
-            }
-            return result
-        },
-        diff_time: function(start_date, end_date) {
-            var diff = end_date.getTime() - start_date.getTime();
-            var minutes = Math.floor(diff / (60 * 1000));
-            var leave3 = diff % (60 * 1000);
-            var seconds = leave3 / 1000
-            var result = seconds.toFixed(minutes > 0 ? 0 : 2) + '秒';
-            if (minutes > 0) {
-                result = minutes + "分" + seconds.toFixed(0) + '秒'
-            }
-            return result
-        },
-
-        to_size: function(a) {
-            var d = [" B", " KB", " MB", " GB", " TB", " PB"];
-            var e = 1024;
-            for (var b = 0; b < d.length; b += 1) {
-                if (a < e) {
-                    var num = (b === 0 ? a : a.toFixed(2)) + d[b];
-                    return (!isNaN((b === 0 ? a : a.toFixed(2))) && typeof num != 'undefined') ? num : '0B';
-                }
-                a /= e
-            }
-        }
-    },
     init: function() {
-        if (bt.get_cookie('rank') == undefined || bt.get_cookie('rank') == null || bt.get_cookie('rank') == 'a' || bt.get_cookie('rank') == 'b') {
-            bt.set_cookie('rank', 'list');
-        }
-        this.area = [window.innerWidth, window.innerHeight];
-        this.file_path = bt.get_cookie('Path');
-        this.event_bind(); // 事件绑定
-        this.reader_file_list({ is_operating: true }); // 渲染文件列表
-        this.render_file_disk_list(); // 渲染文件磁盘列表
-        this.file_drop.init(); // 初始化文件上传
-        this.set_file_table_width(); // 设置表格宽度
+        var that = this;
+        //推荐安全软件
+        product_recommend.init(function(){
+            if (bt.get_cookie('rank') == undefined || bt.get_cookie('rank') == null || bt.get_cookie('rank') == 'a' || bt.get_cookie('rank') == 'b') {
+                bt.set_cookie('rank', 'list');
+            }
+            that.area = [window.innerWidth, window.innerHeight];
+            that.file_path = bt.get_cookie('Path');
+            that.event_bind(); // 事件绑定
+            that.reader_file_list({ is_operating: true }); // 渲染文件列表
+            that.render_file_disk_list(); // 渲染文件磁盘列表
+
+            that.set_file_table_width(); // 设置表格宽度
+            that.recomConfig = product_recommend.get_recommend_type(7);
+            var callback = $(this).data('callback')
+            if (callback) callback(item);
+        })
     },
     // 事件绑定
     event_bind: function() {
@@ -594,21 +116,20 @@ var bt_file = {
             }
         });
         $('.search_path_views').find('.file_search_checked').unbind('click').click(function() {
-                if ($(this).hasClass('active')) {
-                    $(this).removeClass('active')
-                } else {
-                    $(this).addClass('active');
-                }
-            })
-            // 搜索按钮
+          if ($(this).hasClass('active')) {
+            $(this).removeClass('active')
+          } else {
+            $(this).addClass('active')
+          }
+        })
+        // 搜索按钮
         $('.search_path_views').on('click', '.path_btn', function(e) {
             var _obj = { path: that.file_path, search: $('.file_search_input').val() };
             if ($('#search_all').hasClass('active')) _obj['all'] = 'True'
-            that.loadT = bt.load('正在搜索文件中,请稍候...');
+            that.loadT = bt.load('正在搜索文件中,请稍候...')
+            _obj['file_btn'] = true
             that.reader_file_list(_obj, function(res) {
-                if (!res.msg) {
-                    that.loadT.close();
-                }
+              if (!res.msg) that.loadT.close()
             })
             e.stopPropagation();
         })
@@ -617,23 +138,18 @@ var bt_file = {
         });
         // 搜索框（获取焦点、回车提交）
         $('.search_path_views .file_search_input').on('focus keyup', function(e) {
-                e = e || window.event;
-                var _obj = { path: that.file_path, search: $(this).val() };
-                switch (e.type) {
-                    case 'keyup':
-                        var isCheck = $('.file_search_checked').hasClass('active')
-                        if (isCheck) _obj['all'] = 'True'
-                        if (e.keyCode != 13 && e.type == 'keyup') return false;
-                        that.loadT = bt.load('正在搜索文件中,请稍候...');
-                        that.reader_file_list(_obj, function(res) {
-                            if (!res.msg) {
-                                that.loadT.close();
-                            }
-                        })
-                        break;
-                }
-                e.stopPropagation();
-                e.preventDefault();
+            e = e || window.event;
+            var _obj = { path: that.file_path, search: $(this).val() };
+            switch (e.type) {
+                case 'keyup':
+                  var isCheck = $('.file_search_checked').hasClass('active')
+                  if (isCheck) _obj['all'] = 'True'
+                  if (e.keyCode != 13 && e.type == 'keyup') return false;
+                  $('.path_btn').click()
+                  break;
+            }
+            e.stopPropagation();
+            e.preventDefault();
             })
             // 文件路径事件（获取焦点、失去焦点、回车提交）
         $('.file_path_input .path_input').on('focus blur keyup', function(e) {
@@ -702,16 +218,16 @@ var bt_file = {
         });
         //目录获取子级所有文件夹(箭头图标)
         $('.file_path_input .file_dir_view').on('click', '.file_dir_item i', function(e) {
-                var children_list = $(this).siblings('.nav_down_list')
-                var _path = $(this).siblings('span').attr('title');
-                children_list.show().parent().siblings().find('.nav_down_list').removeAttr('style');
-                that.render_path_down_list(children_list, _path);
-                $(document).one('click', function() {
-                    children_list.removeAttr('style');
-                    e.stopPropagation();
-                });
-                e.stopPropagation();
-            })
+          var children_list = $(this).siblings('.nav_down_list')
+          var _path = $(this).siblings('span').attr('title');
+          children_list.show().parent().siblings().find('.nav_down_list').removeAttr('style');
+          that.render_path_down_list(children_list, _path);
+          $(document).one('click', function() {
+              children_list.removeAttr('style');
+              e.stopPropagation();
+          });
+          e.stopPropagation();
+        })
             //目录子级文件路径跳转（下拉）
         $('.file_path_input .file_dir_view').on('click', '.file_dir_item .nav_down_list li', function(e) {
             that.reader_file_list({ path: $(this).data('path'), is_operating: true });
@@ -730,7 +246,9 @@ var bt_file = {
 
         // 上传
         $('.upload_file').on('click', function(e) {
-            that.file_drop.dialog_view();
+            var path = $('#fileInputPath').attr('data-path');
+            uploadFiles.init_upload_path(path);
+            uploadFiles.upload_layer();
         });
         // 下载
         $('.upload_download').on('click', function(e) {
@@ -833,9 +351,41 @@ var bt_file = {
 
         // 分享列表
         $('.share_file_list').on('click', function() {
-                that.open_share_view();
-            })
-            // 打开硬盘挂载的目录
+            that.open_share_view();
+        })
+        // 数据同步
+        $('.file_rsync_list').on('click',function(){
+            try{
+                $.each(that.recomConfig.list,function(index,item){
+                    if(item.name == 'rsync'){
+                        var _title = '',_tips = '',_status = 0;
+                        if(!item['isBuy'] || !item['install']){
+                            if(item['isBuy'] && !item['install']){
+                                _title = '安装'
+                                _tips = '检测到'+item.title+'功能没有安装，是否立即安装开启使用'
+                            }else{
+                                product_recommend.recommend_product_view(item)
+                                return false;
+                            }
+                        }else{
+                            bt.plugin.get_plugin_byhtml(item.name,function(html){
+                                layer.open({
+                                    type:1,
+                                    title:'<img style="width: 24px;margin-right: 5px;margin-left: -10px;margin-top: -3px;" src="/static/img/soft_ico/ico-rsync.png">数据同步工具',
+                                    area:'1000px',
+                                    content:html,
+                                })
+                            })
+                            return false;
+                        }
+                        layer.confirm(_tips, { title: _title+item.title, closeBtn: 2, icon: 3 }, function() {
+                            bt.soft.install(item['name'])
+                        })
+                    }
+                })
+            }catch(err){console.log(err);}
+        })
+        // 打开硬盘挂载的目录
         $('.mount_disk_list').on('click', '.nav_btn', function() {
             var path = $(this).data('menu');
             that.reader_file_list({ path: path, is_operating: true });
@@ -1072,18 +622,27 @@ var bt_file = {
 
         //设置单页显示的数量，默认为100，设置local本地缓存
         $('.filePage').on('change', '.showRow', function() {
-            var val = $(this).val();
-            console.log(val);
+            var val = $(this).val()
             bt.set_storage('local','showRow',val);
-            that.reader_file_list({ showRow: val, p: 1, is_operating: false });
+            var search = $('.file_search_input').val();
+            var data = { showRow: val, p: 1, is_operating: false, search: search, file_btn: !!search }
+            if ($('#search_all').hasClass('active')) {
+                data.all = 'True';
+            }
+            that.reader_file_list(data);
         });
 
         // 页码跳转
         $('.filePage').on('click', 'div:nth-child(2) a', function(e) {
-            var num = $(this).attr('href').match(/p=([0-9]+)$/)[1];
-            that.reader_file_list({ path: that.path, p: num })
-            e.stopPropagation();
-            e.preventDefault();
+            var num = $(this).attr('href').match(/p=([0-9]+)$/)[1]
+            var search = $('.file_search_input').val();
+            var data = { path: that.path, p: num, search: search, file_btn: !!search }
+            if ($('#search_all').hasClass('active')) {
+                data.all = 'True';
+            }
+            that.reader_file_list(data)
+            e.stopPropagation()
+            e.preventDefault()
         })
 
         // 获取文件夹大小
@@ -1136,16 +695,17 @@ var bt_file = {
                     left: ev.clientX - $(this).offset().left
                 };
                 // 鼠标按下后拖动
-                $(document).unbind('mousemove').mousemove(function(ev) {
+                bt_file.window_mousemove = function(ev) {
                     // 鼠标按下后移动到的位置
                     var endPos = {
                         top: ev.clientY - con_t > 0 && ev.clientY - con_t < container.height() ? ev.clientY - con_t : (ev.clientY - (con_t + container.height()) > 1 ? container.height() : 0),
                         left: ev.clientX - con_l > 0 && ev.clientX - con_l < container.width() ? ev.clientX - con_l : (ev.clientX - (con_l + container.width()) > 1 ? container.width() : 0)
                     };
-                    var fixedPoint = { // 设置定点  
+                    var fixedPoint = { // 设置定点
                         top: endPos.top > startPos.top ? startPos.top : endPos.top,
                         left: endPos.left > startPos.left ? startPos.left : endPos.left
                     };
+                    var enter_files_box = that.enter_files_box()
                     if (bt.get_cookie('rank') == 'list') { //在列表模式下减去表头高度
                         fixedPoint.top = fixedPoint.top + 40
                     }
@@ -1175,17 +735,17 @@ var bt_file = {
                     if (startPos.top == endPos.top || startPos.left == endPos.left) return true;
                     // if(Math.abs(startPos.top - endPos.top) <= 5 || Math.abs(startPos.left == endPos.left) <= 5) return true;
                     // 设置拖拽盒子位置
-                    that.enter_files_box().show().css({
+                    enter_files_box.show().css({
                         left: fixedPoint.left + 'px',
                         top: fixedPoint.top + 'px',
                         width: w + 'px',
                         height: h + 'px'
                     });
 
-                    var box_offset_top = that.enter_files_box().offset().top;
-                    var box_offset_left = that.enter_files_box().offset().left;
-                    var box_offset_w = that.enter_files_box().offset().left + that.enter_files_box().width();
-                    var box_offset_h = that.enter_files_box().offset().top + that.enter_files_box().height();
+                    var box_offset_top = enter_files_box.offset().top;
+                    var box_offset_left = enter_files_box.offset().left;
+                    var box_offset_w = enter_files_box.offset().left + enter_files_box.width();
+                    var box_offset_h = enter_files_box.offset().top + enter_files_box.height();
                     $(container).find('.file_tr').each(function(i, item) {
                         var offset_top = $(item).offset().top;
                         var offset_left = $(item).offset().left;
@@ -1205,15 +765,16 @@ var bt_file = {
                             }
                         }
                     });
-                })
+                }
+
 
                 // 鼠标抬起
-                $(document).on('mouseup', function() {
-                    var _move_array = [];
-                    var box_offset_top = that.enter_files_box().offset().top;
-                    var box_offset_left = that.enter_files_box().offset().left;
-                    var box_offset_w = that.enter_files_box().offset().left + that.enter_files_box().width();
-                    var box_offset_h = that.enter_files_box().offset().top + that.enter_files_box().height();
+                bt_file.window_mouseup = function() {
+                    var _move_array = [],enter_files_box = that.enter_files_box();
+                    var box_offset_top = enter_files_box.offset().top;
+                    var box_offset_left = enter_files_box.offset().left;
+                    var box_offset_w = enter_files_box.offset().left + enter_files_box.width();
+                    var box_offset_h = enter_files_box.offset().top + enter_files_box.height();
                     $(container).find('.file_tr').each(function(i, item) {
                         var offset_top = $(item).offset().top;
                         var offset_left = $(item).offset().left;
@@ -1231,9 +792,13 @@ var bt_file = {
                         }
                     });
                     that.render_file_selected(_move_array); //渲染数据
-                    that.enter_files_box().remove(); //删除盒子
+                    enter_files_box.remove(); // 删除盒子
                     $('.file_list_content').unbind('mousewheel'); //解绑滚轮事件
-                })
+                    // console.log(bt_file.window_mousemove,bt_file.window_mouseup,'---------')
+                    $(document).unbind('mousemove',bt_file.window_mousemove);
+                }
+                $(document).one('mouseup',bt_file.window_mouseup);
+                $(document).on('mousemove',bt_file.window_mousemove);
                 ev.stopPropagation();
                 ev.preventDefault();
             })
@@ -1297,6 +862,17 @@ var bt_file = {
             item.type_tips = item.type == 'file' ? '文件' : '目录';
             that.file_groud_event(item);
         });
+        // 文件搜索
+        $('.replace_content').on('click', function() {
+            that.replace_content_view()
+        })
+    },
+    
+    // 上传文件
+    file_drop:function(){
+        var path = $('#fileInputPath').attr('data-path');
+        uploadFiles.init_upload_path(path);
+        uploadFiles.upload_layer()
     },
     /**
      * @descripttion: 文件拖拽范围
@@ -1304,7 +880,7 @@ var bt_file = {
      * @return: 拖拽元素
      */
     enter_files_box: function() {
-        if ($('#web_mouseDrag').length == 0) {
+        if ($('#web_mouseDrag').length === 0) {
             $('<div></div>', {
                 id: 'web_mouseDrag',
                 style: [
@@ -1458,8 +1034,9 @@ var bt_file = {
         } else {
             $('.nav_group.mount_disk_list,.nav_group.multi').removeClass('thezoom');
         }
-        if (this.area[0] < 1360) {
-            indexs = Math.ceil(((1360 - this.area[0]) / 68));
+        $('.file_menu_tips').removeAttr('style')
+        if (this.area[0] < 1500) {
+            indexs = Math.ceil(((1500 - this.area[0]) / 68));
             $('.batch_group_list>.nav_btn_group').each(function(index) {
                 if (index >= $('.batch_group_list>.nav_btn_group').length - (indexs + 2)) {
                     $(this).hide()
@@ -1467,6 +1044,7 @@ var bt_file = {
                     $(this).show();
                 }
             });
+            $('.file_menu_tips').hide()
             $('.batch_group_list>.nav_btn_group:last-child').removeClass('hide').show();
         } else {
             $('.batch_group_list>.nav_btn_group').css('display', 'inline-block');
@@ -1630,7 +1208,7 @@ var bt_file = {
                     value: '',
                     eventType: 'enter',
                     enter: function() {
-                        $('.download_file_view .layui-layer-btn0').click();
+                      $('.download_file_view .layui-layer-btn0').click();
                     }
                 }
             ]
@@ -1649,7 +1227,16 @@ var bt_file = {
                 yes: function(indexo, layero) {
                     var ress = form.getVal();
                     if (!bt.check_url(ress.url)) {
-                        layer.msg('请输入有效的url地址..', { icon: 2 })
+                      layer.msg('请输入有效的url地址', { icon: 2 })
+                      return false;
+                    }
+                    if(ress.filename == '') {
+                      layer.msg('请输入文件名', { icon: 2 })
+                      return false;
+                    }
+                    var _val = ress.filename.replace(/[\r\n]/g, "");
+                    if (that.match_unqualified_string(_val)) {
+                        layer.msg('名称不能含有 /\\:*?"<>|符号', { icon: 2 });
                         return false;
                     }
                     form.submitForm(function(res) {
@@ -1800,15 +1387,26 @@ var bt_file = {
         $('.file_table_view').removeClass('.list_view,.icon_view').addClass(model == 'list' ? 'list_view' : 'icon_view');
         $('.cut_view_model:nth-child(' + (model == 'list' ? '2' : '1') + ')').addClass('active').siblings().removeClass('active');
         this.file_images_list = [];
+        if(typeof data.search){
+          var search_input = $('.search_path_views .file_search_input').val()
+          data['search'] = search_input
+        }
+        if(typeof data.file_btn === "undefined"){
+          $('.file_search_input').val('')
+          $('#search_all').removeClass('active')
+          data['search'] = ''
+          delete data['file_btn']
+          delete data['all']
+        }
         this.get_dir_list(data, function(res){
             if (res.status === false && res.msg.indexOf('指定目录不存在!') > -1) {
-                return that.reader_file_list({ path: '/www' })
+              return that.reader_file_list({ path: '/www' })
             }
             that.file_path = that.path_check(res.PATH);
             that.file_list = $.merge(that.data_reconstruction(res.DIR, 'DIR'), that.data_reconstruction(res.FILES));
-            that.is_recycle = res.FILE_RECYCLE;
             that.file_store_list = res.STORE;
             bt.set_cookie('Path', that.path_check(res.PATH));
+            if(typeof res.FILE_RECYCLE == 'boolean')bt.set_cookie('file_recycle_status',res.FILE_RECYCLE)
             that.reader_file_list_content(that.file_list, function(rdata) {
                 $('.path_input').attr('data-path', that.file_path);
                 $('.file_nav_view .multi').addClass('hide');
@@ -1821,8 +1419,8 @@ var bt_file = {
                 var page = $(res.PAGE);
                 page.append('<span class="Pcount-item">每页<select class="showRow">' + select_page_num + '</select>条</span>');
                 $('.filePage').html('<div class="page_num">共' + rdata.is_dir_num + '个目录，' + (that.file_list.length - rdata.is_dir_num) + '个文件，文件大小:<a href="javascript:;" class="btlink" id="file_all_size">计算</a></div>' + page[0].outerHTML);
-                if(data.is_operating) data.is_operating = false;
-                if(data.is_operating && that.file_operating[that.file_pointer] != res.PATH) {
+                // if(data.is_operating) data.is_operating = false;
+                if(data && data.is_operating && that.file_operating[that.file_pointer] != res.PATH) {
                     next_path = that.file_operating[that.file_pointer + 1];
                     if (typeof next_path != "undefined" && next_path != res.PATH) that.file_operating.splice(that.file_pointer + 1);
                     that.file_operating.push(res.PATH);
@@ -1916,7 +1514,7 @@ var bt_file = {
      * @return: 无返回值
      */
     render_file_selected: function(_array) {
-        $(document).unbind('mouseup').unbind('mousemove');
+
         var that = this,
             tmp = [];
         that.clear_table_active()
@@ -1944,7 +1542,7 @@ var bt_file = {
                     '<span>' + item['name'] + '</span>' +
                     '</li>'
             })
-            html += '<li data-manage="favorites" onclick="bt_file.set_favorites_manage()"><span class="iconfont icon-shezhi1"></span><span>管理</span></li>'
+            html += '<li data-manage="favorites" data-null onclick="bt_file.set_favorites_manage()"><span class="iconfont icon-shezhi1"></span><span>管理</span></li>'
         } else { html = '<li data-null style="width: 150px;"><i></i><span>（空）</span></li>' }
 
         $('.favorites_file_path .nav_down_list').html(html)
@@ -2033,6 +1631,567 @@ var bt_file = {
         })
     },
     /**
+     * @description 数据同步
+     * @param {String} config 选中的文件信息
+     * @return void
+     */
+    set_dir_rsync:function(config){
+        var loadget =  layer.msg('正在检测配置信息...',{icon:16,time:0,shade: [0.3, '#000']}),
+            _path = config.path+'/'
+        $.get('/plugin?action=a&name=rsync&s=get_send_conf',function(res){
+            if(res.length > 0){
+                $.each(res,function(index,item){
+                    if(item.path == _path){
+                        layer.close(loadget);
+                        bt_file.set_send_port_view('',item.name,index)
+                        return false;
+                    }
+                    //没有对应的数据时，获取接收端列表
+                    if(index == res.length-1){
+                        get_receive_port_conf()
+                    }
+                })
+            }else{
+                get_receive_port_conf()
+            }
+        })
+        // 获取接收端列表
+        function get_receive_port_conf(){
+            $.get('/plugin?action=a&name=rsync&s=get_global_conf',function(res){
+                if(res['modules'].length > 0){
+                    $.each(res['modules'],function(index,item){
+                        if(item.path == _path){
+                            layer.close(loadget);
+                            item['mName'] = item.name;
+                            var _conf = {title:'编辑接收端',btn:'保存',action:'modify_module',form:item}
+                            bt_file.set_rsync_view('',_conf)
+                            return false;
+                        }
+                        //没有对应的数据时，获取接收端列表
+                        if(index == res['modules'].length-1){
+                            default_create_deply()
+                        }
+                    })
+                }else{
+                    default_create_deply()
+                }
+            })
+        }
+        // 默认创建同步
+        function default_create_deply(){
+            layer.close(loadget);
+            bt.open({
+                type: 1,
+                title:'【'+config.filename+'】设置数据同步',
+                area:'600px',
+                btn:false,
+                content:'<div class="bt-form pd25">\
+                  <div class="rebt-con" style="width:100%;display: flex;padding:0;height:auto;justify-content: space-around;">\
+                    <div class="rebt-li" style="position:relative;width: 200px;" onclick="bt_file.set_rsync_view(\''+config.path+'\')">\
+                      <a href="javascript:;" style="font-size:13px;border-radius:2px;"><span style="display: block;font-weight: bold;font-size: 15px;">接收端</span>我需要从其他服务器中接收数据</a>\
+                    </div>\
+                    <div class="rebt-li" style="position:relative;width: 200px;" onclick="bt_file.set_send_port_view(\''+config.path+'\',false)">\
+                      <a href="javascript:;"  style="font-size:13px;border-radius:2px;"><span style="display: block;font-weight: bold;font-size: 15px;">发送端</span>我需要将本服务器数据发送出去</a>\
+                    </div>\
+                  </div>\
+                  <ul class="help-info-text c7">\
+                    <li>注意：不同的同步任务及服务器请不要使用相同的同步名称及用户名，这会导致管理混乱。</li>\
+                    <li><a class="btlink" target="_blank" href="https://www.bt.cn/bbs/forum.php?mod=viewthread&tid=11231">详细使用方法，请点击这里查看教程</a><a href="https://www.bt.cn/bbs/forum.php?mod=viewthread&tid=11231" target="_blank" class="bt-ico-ask" style="cursor: pointer;">?</a></li>\
+                    </ul>\
+                </div>'
+            })
+        }
+    },
+    /**
+     * @description 设置文件夹数据同步   接收端
+     * @param {String} path 文件夹路径
+     * @param {Object} editConfig 编辑参数
+     * @return void
+     */
+    set_rsync_view:function(path,editConfig){
+        var _param = {title:'创建接收端',btn:'提交',action:'add_module',form:{mName:'',password:bt.get_random(12),path:path,comment:''}},
+            receiveForm = null;
+        if(editConfig) _param = editConfig
+        layer.open({
+            type: 1,
+            title: _param.title,
+            area: ['470px','320px'],
+            btn:[_param.btn,'取消'],
+            shadeClose: false,
+            closeBtn: 2,
+            content: '<div class="ptb20" id="receive_port_view"></div>',
+            success: function (layers) {
+                receiveForm = bt_tools.form({
+                    el:'#receive_port_view',
+                    form:[{
+                        label:'用户名',
+                        group: {
+                            type: 'text',
+                            name: 'mName',
+                            width: '300px',
+                            disabled:(typeof editConfig === 'object'?true:false),
+                            placeholder: '请填写用户名,不能有中文或特殊符号'
+                        }
+                    },{
+                        label:'密码',
+                        group: {
+                            type: 'text',
+                            name: 'password',
+                            width: '300px',
+                            icon:{
+                                type:'glyphicon-repeat',
+                                name:'random',
+                            },
+                            placeholder: '请输入密码'
+                        }
+                    },{
+                        label:'同步到',
+                        group: {
+                            type: 'text',
+                            name: 'path',
+                            width: '300px',
+                            disabled:true,
+                            placeholder: '请选择本地路径'
+                        }
+                    },{
+                        label:'备注',
+                        group: {
+                            type: 'text',
+                            name: 'comment',
+                            width: '300px',
+                        }
+                    }],
+                    data:_param.form
+                })
+                //随机密码
+                $('.glyphicon-repeat').click(function(){
+                    $(this).siblings('input').val(bt.get_random(12))
+                })
+            },
+            yes:function(indexs){
+                var _form = receiveForm.$get_form_value();
+                if(_form.mName == '') return layer.msg('请填写用户名',{icon:2})
+                if(_form.password == '') return layer.msg('请填入密码',{icon:2})
+                bt_tools.send({
+                    url: '/plugin?action=a&name=rsync&s='+_param.action,
+                    data: _form
+                }, function (res) {
+                    layer.closeAll();
+                    bt_tools.msg(res)
+                    look_receive_info(_form)
+                    path = path.replace(/\/$/, "")
+                    if(path) bt_file.add_files_rsync(path,'recv')
+                }, '提交表单信息')
+            }
+        })
+        // 数据同步账号信息
+        function look_receive_info(form){
+            layer.open({
+                type:1,
+                closeBtn: 1,
+                title:'接收端用户信息',
+                area:['400px','220px'],
+                shadeClose: false,
+                content:'<div class="pd20">\
+                <div class="replace_content_view ">\
+                <div class="replace_content_line">\
+                    <span class="tname">用户名</span>\
+                    <div class="info-r">\
+                        <input class="bt-input-text" disabled="disabled" autocomplete="off" type="text" style="width:280px" value="'+form.mName+'">\
+                    </div>\
+                </div>\
+                <div class="replace_content_line">\
+                    <span class="tname">密码</span>\
+                    <div class="info-r">\
+                        <input class="bt-input-text" disabled="disabled" autocomplete="off" type="text" style="width:280px" value="'+form.password+'">\
+                    </div>\
+                </div></div>\
+                <ul class="help-info-text c7">\
+                    <li>使用上面的用户信息，前往发送数据的服务器上面的创建发送端</li>\
+                </ul></div>'
+            })
+        }
+    },
+    /**
+     * @description 设置文件夹数据同步   发送端
+     * @param {String} path 文件夹路径
+     * @param {String} mName 编辑参数
+     * @param {Number} index 索引位置
+     * @return void
+     */
+    set_send_port_view:function(path,mName,index){
+        var loadget =  layer.msg('正在获取配置信息...',{icon:16,time:0,shade: [0.3, '#000']});
+        var setClientForm = {},setTitle ='',setSubmit = ''
+        $.post('/plugin?action=a&name=rsync&s=get_send_byname',{mName:mName},function(rdata){
+            layer.close(loadget);
+            var aulv = '',alwv = '',real ='',timing='',day = '',min='',none='',hour='',minuten='',open_compress = '',close_compress='';
+            var status = (mName == false)?false:true;
+            if (status){
+                setTitle = '编辑同步任务';
+                setSubmit = '保存';
+                setClientForm = rdata;
+                if (setClientForm.delete != 'true'){
+                    aulv = 'selected ="selected "';
+                }else{
+                    alwv = 'selected ="selected "';
+                }
+                if (setClientForm.realtime) {
+                    real = 'selected ="selected "';
+                    none = 'display:none;';
+                }else{
+                    timing ='selected ="selected "';
+                    none = 'display:block;';
+                }
+                if (setClientForm.cron.type == 'day'){
+                    day = 'selected ="selected "';
+                    hour = 'display:block;';
+                    minuten = 'display:none;';
+                }else{
+                    min ='selected ="selected "';
+                    hour = 'display:none;';
+                    minuten = 'display:block;';
+                }
+
+                if(setClientForm.rsync.compress == 'true'){
+                    open_compress = 'selected ="selected "';
+                }else{
+                    close_compress = 'selected ="selected "';
+                }
+            }else{
+                setTitle = '创建发送任务';
+                setSubmit = '提交';
+                none = 'display:none;';
+                minuten = 'display:none;';
+                setClientForm = {
+                    delete:'false',
+                    cron:{
+                        where_hour:'0',
+                        id:'',
+                        type:'',
+                        where1:'1',
+                        where_minute:'0'
+                    },
+                    rsync:{
+                        bwlimit:1024
+                    },
+                    delay:3,
+                    realtime:true,
+                    secret_key:'',
+                    ip:'',
+                    mName:'',
+                    path:path,
+                    exclude:'',
+                }
+            }
+            layer.open({
+                type: 1,
+                skin: 'demo-class',
+                area: '600px',
+                title: setTitle,
+                closeBtn: 2,
+                shift: 0,
+                shadeClose: false,
+                content: "<form class='bt-form pd20 pb70 ' id='fromServerPath' accept-charset='utf-8'>\
+                            <div class='line'>\
+                                <span class='tname'>服务器IP</span>\
+                                <div class='info-r c4'>\
+                                    <input class='bt-input-text' type='text' name='ip' placeholder='请输入接收服务器IP' value='"+ setClientForm.ip +"' style='width:310px' />\
+                                </div>\
+                            </div>\
+                            <div class='line'>\
+                                <span class='tname'>同步目录</span>\
+                                <div class='info-r c4'>\
+                                    <input id='inputPath' class='bt-input-text mr5' type='text' name='path' value='"+ setClientForm.path +"' placeholder='请选择同步目录' disabled='disabled' style='width:310px' />\
+                                </div>\
+                            </div>\
+                            <div class='line'>\
+                                <span class='tname'>同步方式</span>\
+                                <div class='info-r c4'>\
+                                    <select class='bt-input-text' name='delete' style='width:100px'>\
+                                        <option value='false' "+ aulv +">增量</option>\
+                                        <option value='true' "+ alwv +">完全</option>\
+                                    </select>\
+                                    <a href='https://www.bt.cn/bbs/forum.php?mod=viewthread&amp;tid=11231' target='_blank' class='bt-ico-ask' style='cursor: pointer;'>?</a>\
+                                    <span style='margin-left: 20px;margin-right: 10px;'>同步周期</span>\
+                                    <select class='bt-input-text synchronization' name='realtime' style='width:100px'>\
+                                        <option value='true' "+ real +">实时同步</option>\
+                                        <option value='false' "+ timing +">定时同步</option>\
+                                    </select>\
+                                </div>\
+                            </div>\
+                            <!--<div class='line'>\
+                                <span class='tname'>同步周期</span>\
+                                <div class='info-r c4'>\
+                                    <select class='bt-input-text synchronization' name='realtime' style='width:100px'>\
+                                        <option value='true' "+ real +">实时同步</option>\
+                                        <option value='false' "+ timing +">定时同步</option>\
+                                    </select>\
+                                </div>\
+                            </div>-->\
+                            <div class='line' id='period' style='"+ none +"height:45px;'>\
+                                <span class='tname'>定时周期</span>\
+                                <div class='info-r c4'>\
+                                    <select class='bt-input-text pull-left mr20' name='period' style='width:100px;'>\
+                                        <option value='day' "+ day +">每天</option>\
+                                        <option value='minute-n' "+ min +">N分钟</option>\
+                                    </select>\
+                                    <div class='plan_hms pull-left mr20 bt-input-text hour' style='"+ hour +"'>\
+                                        <span><input type='number' name='hour' value='"+ setClientForm.cron.hour +"' maxlength='2' max='23' min='0'></span>\
+                                        <span class='name'>小时</span>\
+                                    </div>\
+                                    <div class='plan_hms pull-left mr20 bt-input-text minute' style='"+ hour +"'>\
+                                        <span><input type='number' name='minute' value='"+ setClientForm.cron.minute +"' maxlength='2' max='59' min='0'></span>\
+                                        <span class='name'>分钟</span>\
+                                    </div>\
+                                    <div class='plan_hms pull-left mr20 bt-input-text minute-n' style='"+ minuten +"'>\
+                                        <span><input type='number' name='minute-n' value='"+ setClientForm.cron.where1 +"' maxlength='2' max='59' min='0'></span>\
+                                        <span class='name'>分钟</span>\
+                                    </div>\
+                                </div>\
+                            </div>\
+                            <div class='line'>\
+                                <span class='tname'>限速</span>\
+                                <div class='info-r c4'>\
+                                    <input class='bt-input-text' type='number' name='bwlimit' min='0'  value='"+ setClientForm.rsync.bwlimit +"' style='width:100px' /> KB\
+                                    <span style='margin-left: 54px;margin-right: 10px;'>延迟</span><input class='bt-input-text' min='0' type='number' name='delay'  value='"+ setClientForm.delay +"' style='width:100px' /> 秒\
+                                </div>\
+                            </div>\
+                            <div class='line'>\
+                                <span class='tname'>连接方式</span>\
+                                <div class='info-r c4'>\
+                                    <select class='bt-input-text' name='conn_type' style='width:100px'>\
+                                        <option value='key'>密钥</option>\
+                                        <option value='user'>帐号</option>\
+                                    </select>\
+                                    <span style='margin-left: 45px;margin-right: 10px;'>压缩传输</span>\
+                                    <select class='bt-input-text' name='compress' style='width:100px'>\
+                                        <option value='true' "+open_compress+">开启</option>\
+                                        <option value='false' "+close_compress+">关闭</option>\
+                                    </select>\
+                                </div>\
+                            </div>\
+                            <div class='line conn-key'>\
+                                <span class='tname'>接收密钥</span>\
+                                <div class='info-r c4'>\
+                                    <textarea id='mainDomain' class='bt-input-text' name='secret_key' style='width:310px;height:75px;line-height:22px' placeholder='此密钥为 接收配置[接收账号] 的密钥'>"+ setClientForm.secret_key +"</textarea>\
+                                </div>\
+                            </div>\
+                            <div class='line conn-user'>\
+                                <span class='tname'>用户名</span>\
+                                <div class='info-r c4'>\
+                                    <input class='bt-input-text' type='text' name='u_user' min='0'  value='"+(setClientForm.name?setClientForm.name:'')+"' style='width:310px' />\
+                                </div>\
+                            </div>\
+                            <div class='line conn-user'>\
+                                <span class='tname'>密码</span>\
+                                <div class='info-r c4'>\
+                                    <input class='bt-input-text' type='text' name='u_pass' min='0'  value='"+(setClientForm.password?setClientForm.password:'')+"' style='width:310px' />\
+                                </div>\
+                            </div>\
+                            <div class='line conn-user'>\
+                                <span class='tname'>端口</span>\
+                                <div class='info-r c4'>\
+                                    <input class='bt-input-text' type='number' name='u_port' min='0'  value='"+(setClientForm.rsync.port?setClientForm.rsync.port:'873')+"' style='width:310px' />\
+                                </div>\
+                            </div>\
+                            <div class='bt-form-submit-btn'>\
+                                <button type='button' class='btn btn-danger btn-sm btn-title colseView' onclick='layer.closeAll()'>取消</button>\
+                                <button type='button' class='btn btn-success btn-sm btn-title setViewData'>"+ setSubmit +"</button>\
+                            </div>\
+                            <ul class=\"help-info-text c7\">\
+                                <li>【同步目录】：若不以<code>/</code>结尾，则表示将数据同步到二级目录，一般情况下目录路径请以<code>/</code>结尾</li>\
+                                    <li>【同步方式】增量： 数据更改/增加时同步，且只追加和替换文件</li>\
+                                    <li>【同步方式】完全： 保持两端的数据与目录结构的一致性，会同步删除、追加和替换文件和目录</li>\
+                                    <li>【限速】：限制数据同步任务的速度，防止因同步数据导致带宽跑高</li>\
+                                    <li>【延迟】：在延迟时间周期内仅记录不同步，到达周期后一次性同步数据，以节省开销</li>\
+                                    <li>【压缩传输】：开启后可减少带宽开销，但会增加CPU开销，如带宽充足，建议关闭此选项</li>\
+                                </ul>\
+                            </form>",
+
+                success:function(){
+                    $(".conn-user").hide();
+                    $("select[name='conn_type']").change(function(){
+                        if($(this).val() == 'key'){
+                            $(".conn-user").hide();
+                            $(".conn-key").show();
+                        }else{
+                            $(".conn-user").show();
+                            $(".conn-key").hide();
+                        }
+                    });
+                    //默认添加时使用账号密码方式
+                    if(!status){
+                        $("select[name='conn_type']").val('user')
+                        $("select[name='conn_type']").change()
+                    }
+                }
+            });
+
+            $("select[name='delete']").change(function(){
+                if($(this).val() == 'true'){
+                    var mpath = $('input[name="path"]').val();
+                    var msg = '<div><span style="color:orangered;">警告：您选择了完全同步，将会使本机同步与目标机器指定目录的文件保持一致，'
+                        +'<br />请确认目录设置是否有误，一但设置错误，可能导致目标机器的目录文件被删除!</span>'
+                        +'<br /><br /> <span style="color:red;">注意： 同步程序将本机目录：'
+                        +mpath+'的所有数据同步到目标服务器，若目标服务器的同步目录存在其它文件将被删除!</span> <br /><br /> 已了解风险，请按确定继续</div>';
+
+                    layer.confirm(msg,{title:'数据安全风险警告',icon:2,closeBtn: 1,shift: 5,
+                        btn2:function(){
+                            setTimeout(function(){$($("select[name='delete']").children("option")[0]).prop('selected',true);},100);
+                        }
+                    });
+                }
+            });
+            $('.synchronization').click(function(event) {
+                var selVal = $('.synchronization option:selected').val();
+                if (selVal == "false"){
+                    $('#period').show();
+                }else{
+                    $('#period').hide();
+                    $('.hour input,.minute input').val('0');
+                    $('.minute-n input').val('1');
+                }
+            });
+            $('#period select').click(function(event) {
+                var selVal = $('#period select option:selected').val();
+                if (selVal == 'day'){
+                    $('.hour,.minute').show();
+                    if ($('.hour input').val() == ''){
+                        $('.hour input,.minute input').val('0');
+                    }
+                    $('.minute-n').hide();
+                }else{
+                    $('.hour,.minute').hide();
+                    $('.minute-n').show();
+                    if ($('.minute-n input').val() == ''){
+                        $('.minute-n input').val('1');
+                    }
+                }
+            });
+            $('.setViewData').click(function(event) {
+                var server = {
+                    ip:'',
+                    path:'',
+                    secret_key:'',
+                    delete:'true',
+                    realtime:'true',
+                    sname:'',
+                    password:'',
+                    port:873,
+                    cron:{
+                        type:'',
+                        where1:'',
+                        hour:'',
+                        minute:'',
+                        id:'',
+                        port:873
+                    }
+                }
+
+                if ($('input[name="ip"]').val() != ''){
+                    server.ip = $('input[name="ip"]').val();
+                }else{
+                    layer.msg('请输入服务器IP地址！');
+                    return false;
+                }
+                if($('input[name="bwlimit"]').val() > -1){
+                    server.bwlimit = $('input[name="bwlimit"]').val();
+                }
+
+                if($('input[name="delay"]').val() > -1){
+                    server.delay = $('input[name="delay"]').val();
+                }
+
+                if ($('input[name="path"]').val() != ''){
+                    server.path = $('input[name="path"]').val();
+                }else{
+                    layer.msg('请输入同步目录！');
+                    return false;
+                }
+                server.delete = $('select[name="delete"] option:selected').val();
+                server.realtime = ($('select[name="realtime"] option:selected').val() == 'true'?true:false);
+                server.compress = $('select[name="compress"] option:selected').val();
+                if (!server.realtime) {
+                    server.cron.type = $('select[name="period"] option:selected').val();
+                    if (server.cron.type == 'day') {
+                        server.cron.hour = $('input[name="hour"]').val();
+                        server.cron.minute = $('input[name="minute"]').val();
+                        if (server.cron.hour == '' || server.cron.minute =='') {
+                            layer.msg('请输入同步时间！');
+                            return false;
+                        }
+                    }else{
+                        server.cron.where1 = $('input[name="minute-n"]').val();
+                        if (server.cron.where1 == '') {
+                            layer.msg('请输入同步时间！');
+                            return false;
+                        }
+                    }
+                }
+                var conn_type = $("select[name='conn_type']").val();
+                if(conn_type == 'key'){
+                    if ( $('textarea[name="secret_key"]').val() != ''){
+                        server.secret_key = $('textarea[name="secret_key"]').val();
+                    }else{
+                        layer.msg('请输入接收密钥！');
+                        return false;
+                    }
+                }else{
+                    server.sname = $("input[name='u_user']").val();
+                    server.password = $("input[name='u_pass']").val();
+                    server.cron.port = Number($("input[name='u_port']").val());
+                    server.port = server.cron.port;
+                    if (!server.sname || !server.password || !server.cron.port){
+                        layer.msg('请输入帐号、密码、端口信息');
+                        return false;
+                    }
+                }
+
+
+                server.cron = JSON.stringify(server.cron);
+                server.index = index
+                var loading = layer.msg('提交数据中,请稍后...',{icon:16,time:0,shade: [0.3, '#000']});
+                $.post('/plugin?action=a&name=rsync&s=add_ormodify_send',server,function(res){
+                    layer.close(loading);
+                    if (res.status){
+                        layer.closeAll();
+                        setTimeout(function(){
+                            layer.msg(res.msg,{icon:1});
+                        },200)
+                        //创建发送后给文件夹添加备注
+                        if(path){
+                            var _pathPS = path.replace(/\/$/, "")
+                            $.get('/plugin?action=a&name=rsync&s=get_send_conf',function(res){
+                                $.each(res,function(index,item){
+                                    if(item.path == path){
+                                        var ps = '接收服务器:'+item.ip+'::'+item.name;
+                                        bt_tools.send('files/set_file_ps', { filename: _pathPS, ps_type: 0, ps_body: ps }, function() {
+                                            $('.file_tr.active .set_file_ps').data('value', ps);
+                                            $('.file_tr.active .set_file_ps').val(ps);
+                                        }, { tips: '设置文件/目录备注', tips: true });
+                                    }
+                                })
+                            })
+                            bt_file.add_files_rsync(_pathPS,'send')
+                        }
+                    }else{
+                        layer.msg(res.msg,{icon:2});
+                    }
+                });
+            });
+        });
+    },
+    /**
+     * @description 添加文件同步数据标记
+     * @param {String} path 文件夹路径
+     * @param {String} type 接收/发送
+     * @return void
+     */
+    add_files_rsync:function(path,type){
+        bt_tools.send('files/add_files_rsync', { path:path,s_type:type }, function() {
+        }, { tips: '文件夹标记', tips: true });
+    },
+    /**
      * @description 渲染文件列表内容
      * @param {Object} data 文件列表数据
      * @param {Function} callback 回调函数
@@ -2069,38 +2228,42 @@ var bt_file = {
                     return _openTitle;
                 }(item))
             that.file_list[index]['only_id'] = only_id;
-            _html += '<div class="file_tr" data-index="' + index + '" data-filename="' + item.filename + '" ' + (bt.get_cookie('rank') == 'icon' ? 'title="' + path + '&#13;' + lan.files.file_size + ':' + bt.format_size(item.size) + '&#13;' + lan.files.file_etime + ':' + bt.format_data(item.mtime) + '&#13;' + lan.files.file_auth + ':' + item.user + '&#13;' + lan.files.file_own + ':' + item.root_level + '"' : '') + '>' +
-                '<div class="file_td file_checkbox"><div class="file_check"></div></div>' +
-                '<div class="file_td file_name">' +
-                '<div class="file_ico_type"><i class="file_icon ' + (item.type == 'dir' ? 'file_folder' : (item.ext == '' ? '' : 'file_' + item.ext).replace('//', '/')) + '"></i></div>' +
-                '<span class="file_title file_' + item.type + '_status" ' + (bt.get_cookie('rank') == 'icon' ? '' : 'title="' + path + '"') + '><i>' + item.filename + item.soft_link + '</i></span>' + (item.caret ? '<span class="iconfont icon-favorites" style="' + (item.down_id != 0 ? 'right:30px' : '') + '" title="文件已收藏，点击取消"></span>' : '') + (item.down_id != 0 ? '<span class="iconfont icon-share1" title="文件已分享，点击查看信息"></span>' : '') +
-                '</div>' +
-                '<div class="file_td file_type hide"><span title="' + (item.type == 'dir' ? '文件夹' : that.ext_type_tips(item.ext)) + '">' + (item.type == 'dir' ? '文件夹' : that.ext_type_tips(item.ext)) + '</span></div>' +
-                '<div class="file_td file_accept"><span>' + item.user + ' / ' + item.root_level + '</span></div>' +
-                '<div class="file_td file_size"><span>' + (item.type == 'dir' ? '<a class="btlink folder_size" href="javascript:;" data-path="' + path + '">计算</a>' : bt.format_size(item.size)) + '</span></div>' +
-                '<div class="file_td file_mtime"><span>' + bt.format_data(item.mtime) + '</span></div>' +
-                '<div class="file_td file_ps"><span class="file_ps_title" title="' + item.ps + '">' + (item.is_os_ps ? item.ps : '<input type="text" class="set_file_ps" data-value="' + item.ps + '" value="' + item.ps + '" />') + '</span></div>' +
-                '<div class="file_td file_operation"><div class="set_operation_group ' + (that.is_mobile ? 'is_mobile' : '') + '">' +
-                '<a href="javascript:;" class="btlink" data-type="open">' + is_editor_tips + '</a>&nbsp;|&nbsp;' +
-                '<a href="javascript:;" class="btlink" data-type="copy">复制</a>&nbsp;|&nbsp;' +
-                '<a href="javascript:;" class="btlink" data-type="shear">剪切</a>&nbsp;|&nbsp;' +
-                '<a href="javascript:;" class="btlink" data-type="rename">重命名</a>&nbsp;|&nbsp;' +
-                '<a href="javascript:;" class="btlink" data-type="authority">权限</a>&nbsp;|&nbsp;' +
-                '<a href="javascript:;" class="btlink" data-type="' + (is_compress ? 'unzip' : 'compress') + '">' + (is_compress ? '解压' : '压缩') + '</a>&nbsp;|&nbsp;' +
-                '<a href="javascript:;" class="btlink" data-type="del">删除</a>&nbsp;|&nbsp;' +
-                '<a href="javascript:;" class="btlink foo_menu_title" data-type="more">更多<i></i></a>' +
-                '</div></div>' +
-                '</div>';
-            if (item.type == 'dir') is_dir_num++;
+            if (item.type == 'dir') is_dir_num ++;
             item.path = path; // 文件路径;
             item.open_type = that.determine_file_type(item.ext); // 打开类型;
             if (item.open_type == 'images') {
-                item.images_id = images_num;
-                that.file_images_list.push(item.path);
-                images_num++;
+              item.images_id = images_num;
+              that.file_images_list.push(item.path);
+              images_num ++;
             }
-        });
-        $('.file_list_content').html(_html);
+            _html += '<div class="file_tr" data-index="' + index + '" data-filename="' + item.filename + '" ' + (bt.get_cookie('rank') == 'icon' ? 'title="' + path + '&#13;' + lan.files.file_size + ':' + bt.format_size(item.size) + '&#13;' + lan.files.file_etime + ':' + bt.format_data(item.mtime) + '&#13;' + lan.files.file_auth + ':' + item.user + '&#13;' + lan.files.file_own + ':' + item.root_level + '"' : '') + '>' +
+              '<div class="file_td file_checkbox"><div class="file_check"></div></div>' +
+              '<div class="file_td file_name">' +
+              '<div class="file_ico_type">'+
+                (item.open_type == 'images' ? '<img class="file_images" src="/static/images/layer/loading-2.gif" style="width:20px;height:20px;left:5px;top:12.5px;" />' : '') +
+                '<i class="file_icon '+ (item.open_type == 'images' ?'hide ':'') +'' + (item.type == 'dir' ? 'file_folder' : (item.ext == '' ? '' : 'file_' + item.ext).replace('//', '/')) + '"></i>' +
+              '</div>' +
+              '<span class="file_title file_' + item.type + '_status" ' + (bt.get_cookie('rank') == 'icon' ? '' : 'title="' + path + '"') + '><i>' + item.filename + item.soft_link + '</i></span>' + (item.caret ? '<span class="iconfont icon-favorites" style="' + (item.down_id != 0 ? 'right:30px' : '') + '" title="文件已收藏，点击取消"></span>' : '') + (item.down_id != 0 ? '<span class="iconfont icon-share1" title="文件已分享，点击查看信息"></span>' : '') +
+              '</div>' +
+              '<div class="file_td file_type hide"><span title="' + (item.type == 'dir' ? '文件夹' : that.ext_type_tips(item.ext)) + '">' + (item.type == 'dir' ? '文件夹' : that.ext_type_tips(item.ext)) + '</span></div>' +
+              '<div class="file_td file_accept"><span>' + item.user + ' / ' + item.root_level + '</span></div>' +
+              '<div class="file_td file_size"><span>' + (item.type == 'dir' ? '<a class="btlink folder_size" href="javascript:;" data-path="' + path + '">计算</a>' : bt.format_size(item.size)) + '</span></div>' +
+              '<div class="file_td file_mtime"><span>' + bt.format_data(item.mtime) + '</span></div>' +
+              '<div class="file_td file_ps"><span class="file_ps_title" title="' + item.ps + '">' + (item.is_os_ps ? item.ps : '<input type="text" class="set_file_ps" data-value="' + item.ps + '" value="' + item.ps + '" />') + '</span></div>' +
+              '<div class="file_td file_operation"><div class="set_operation_group ' + (that.is_mobile ? 'is_mobile' : '') + '">' +
+              '<a href="javascript:;" class="btlink" data-type="open">' + is_editor_tips + '</a>&nbsp;|&nbsp;' +
+              '<a href="javascript:;" class="btlink" data-type="copy">复制</a>&nbsp;|&nbsp;' +
+              '<a href="javascript:;" class="btlink" data-type="shear">剪切</a>&nbsp;|&nbsp;' +
+              '<a href="javascript:;" class="btlink" data-type="rename">重命名</a>&nbsp;|&nbsp;' +
+              '<a href="javascript:;" class="btlink" data-type="authority">权限</a>&nbsp;|&nbsp;' +
+              '<a href="javascript:;" class="btlink" data-type="' + (is_compress ? 'unzip' : 'compress') + '">' + (is_compress ? '解压' : '压缩') + '</a>&nbsp;|&nbsp;' +
+              '<a href="javascript:;" class="btlink" data-type="del">删除</a>&nbsp;|&nbsp;' +
+              '<a href="javascript:;" class="btlink foo_menu_title" data-type="more">更多<i></i></a>' +
+              '</div></div>' +
+            '</div>';
+        })
+        that.render_file_thumbnail()
+        $('.file_list_content').html(_html)
         if (callback) callback({ is_dir_num: is_dir_num })
         that.clear_table_active(); // 清除表格选中内容
     },
@@ -2110,20 +2273,44 @@ var bt_file = {
      * @return void
      */
     render_file_disk_list: function() {
-        var that = this,
-            html = '',
-            _li = '';
-        that.get_disk_list(function(res) {
-            $.each(res, function(index, item) {
-                html += '<div class="nav_btn" data-menu="' + item.path + '">' +
-                    '<span class="glyphicon glyphicon-hdd"></span>' +
-                    '<span>' + (item.path == '/' ? '/(根目录)' : item.path) + ' (' + item.size[2] + ')</span>' +
-                    '</div>';
-                _li += '<li data-disk="' + item.path + '"><i class="glyphicon glyphicon-hdd"></i><span>' + (item.path == '/' ? '根目录' : item.path) + ' (' + item.size[2] + ')</span></li>'
-            });
-            $('.mount_disk_list').html('<div class="disk_title_group_btn hide"><span class="disk_title_group">磁盘分区</span><i class="iconfont icon-xiala"></i><ul class="nav_down_list">' + _li + '</ul></div><div class="file_disk_list">' + html + '</div>');
-            that.set_menu_line_view_resize();
-        });
+      var that = this,
+        html = '',
+        _li = '';
+      that.get_disk_list(function(res) {
+          $.each(res, function(index, item) {
+              html += '<div class="nav_btn" data-menu="' + item.path + '">' +
+                  '<span class="glyphicon glyphicon-hdd"></span>' +
+                  '<span>' + (item.path == '/' ? '/(根目录)' : item.path) + ' (' + item.size[2] + ')</span>' +
+                  '</div>';
+              _li += '<li data-disk="' + item.path + '"><i class="glyphicon glyphicon-hdd"></i><span>' + (item.path == '/' ? '根目录' : item.path) + ' (' + item.size[2] + ')</span></li>'
+          });
+          $('.mount_disk_list').html('<div class="disk_title_group_btn hide"><span class="disk_title_group">磁盘分区</span><i class="iconfont icon-xiala"></i><ul class="nav_down_list">' + _li + '</ul></div><div class="file_disk_list">' + html + '</div>');
+          that.set_menu_line_view_resize();
+      });
+    },
+
+
+    /**
+     * @description 渲染文件缩略图列表
+    */
+    render_file_thumbnail:function () {
+      if(this.file_images_list.length == 0) return false 
+      var arry = []
+      $.each(this.file_images_list,function (index,item) {
+        var list = item.split('/')
+        arry.push(list[list.length - 1])
+      })
+      var files = arry.join(',')
+      this.$http('get_images_resize', { path: this.file_path,files: files,width:45,height:45,return_type:'base64'}, function(res) {
+        var rdata = res.data
+        $.each(rdata, function(key, item) {
+          if(!item){
+            $('[data-filename="'+ key +'"] .file_images').hide().next().removeClass('hide')
+          }else{
+            $('[data-filename="'+ key +'"] .file_images').attr('src', item).removeAttr('style')
+          }
+        })
+      })
     },
 
     /**
@@ -2137,8 +2324,7 @@ var bt_file = {
           index = $(el).data('index'),
           _openTitle = '打开',
           data = that.file_list[index],
-          compression = ['zip', 'rar', 'gz', 'war', 'tgz', 'bz2'],
-          offsetNum = 0,
+          compression = ['zip', 'rar', 'gz', 'war', 'tgz', 'bz2','7z'],
           config = {
             open:_openTitle,
             split_0:true,
@@ -2147,6 +2333,7 @@ var bt_file = {
             cancel_share:'取消分享',
             favorites:'收藏目录/文件',
             cancel_favorites:'取消收藏',
+            rsync:'数据同步',
             split_1:true,
             dir_kill:'目录查杀',
             authority:'权限',
@@ -2161,7 +2348,28 @@ var bt_file = {
             open_find_dir:'打开文件所在目录',
             split_4:true,
             property:'属性'
-          };
+          },
+          info_ps = [
+            '/etc',
+            '/home',
+            '/tmp',
+            '/root',
+            '/home',
+            '/usr',
+            '/boot',
+            '/lib',
+            '/mnt',
+            '/www',
+            '/bin',
+            '/dev',
+            '/www/server',
+            '/www/Recycle_bin'
+        ];
+        $.each(info_ps,function(index,item){
+            if(item == data.path){ //禁止同步关键目录
+                delete config['rsync']
+            }
+        })
         // 文件类型判断
         switch (that.determine_file_type(data.ext)) {
             case 'images':
@@ -2177,6 +2385,7 @@ var bt_file = {
         config['open'] = (data.type == 'dir' ? '打开' : _openTitle);
         if(data.type === 'dir') delete config['download']; // 判断是否文件或文件夹,禁用下载
         if(data.open_type == 'compress') delete config['open']; // 判断是否压缩文件,禁用操作
+        if(data.type !== 'dir') delete config['rsync']; // 判断是否文件夹，删除数据同步
         if(data.down_id != 0){
           delete config['share']; //已分享
         }else{
@@ -2354,6 +2563,11 @@ var bt_file = {
             left: (left + 10),
             top: top
         }).removeClass('left_menu right_menu').addClass(this.area[0] - (left + el_width) < 230 ? 'left_menu' : 'right_menu');
+
+        // 产品推荐
+        $('.file_menu_icon.rsync_file_icon').css("cssText","background-image:url(/static/img/soft_ico/ico-rsync.png);background-size:20px 18px!important;width:20px;height: 18px;margin-left: -2px;");
+        var file_rsync_li = $('.file_menu_icon.rsync_file_icon').parents('li');
+        file_rsync_li.append('<b class="pro-font-icon" style="margin-left: 40px;font-weight: initial;">专业版</b>')
     },
 
     /**
@@ -2375,7 +2589,7 @@ var bt_file = {
     determine_file_type: function(ext, type) {
         var config = {
                 images: ['jpg', 'jpeg', 'png', 'bmp', 'gif', 'tiff', 'ico', 'JPG', 'webp'],
-                compress: ['zip', 'rar', 'gz', 'war', 'tgz'],
+                compress: ['zip', 'rar', 'gz', 'war', 'tgz','7z'],
                 video: ['mp4', 'mp3', 'mpeg', 'mpg', 'mov', 'avi', 'webm', 'mkv', 'mkv', 'mp3', 'rmvb', 'wma', 'wmv'],
                 ont_text: ['iso', 'xlsx', 'xls', 'doc', 'docx', 'tiff', 'exe', 'so', '7z', 'bz', 'dmg', 'apk', 'pptx', 'ppt', 'xlsb', 'pdf']
             },
@@ -2461,6 +2675,30 @@ var bt_file = {
             case 'cancel_favorites': //取消收藏
                 this.cancel_file_favorites(data);
                 break;
+            case 'rsync':         //数据同步
+                try{
+                    $.each(this.recomConfig.list,function(index,item){
+                        if(item.name == data.open){
+                            var _title = '',_tips = '',_status = 0;
+                            if(!item['isBuy'] || !item['install']){
+                                if(item['isBuy'] && !item['install']){
+                                    _title = '安装'
+                                    _tips = '检测到'+item.title+'功能没有安装，是否立即安装开启使用'
+                                }else{
+                                    product_recommend.recommend_product_view(item)
+                                    return false;
+                                }
+                            }else{
+                                that.set_dir_rsync(data);
+                                return false;
+                            }
+                            layer.confirm(_tips, { title: _title+item.title, closeBtn: 2, icon: 3 }, function() {
+                                bt.soft.install(item['name'])
+                            })
+                        }
+                    })
+                }catch(err){}
+                break;
             case 'authority': // 权限
                 this.set_file_authority(data);
                 break;
@@ -2483,6 +2721,7 @@ var bt_file = {
             case 'tar_gz': // 压缩gzip文件
             case 'rar': // 压缩rar文件
             case 'zip': // 压缩zip文件
+            case '7z': // 压缩zip文件
                 this.compress_file_or_dir(data);
                 break;
             case 'unzip':
@@ -2493,7 +2732,9 @@ var bt_file = {
                 $('.file_path_refresh').click();
                 break;
             case 'upload': //上传文件
-                this.file_drop.dialog_view();
+                var path = $('#fileInputPath').attr('data-path');
+                uploadFiles.init_upload_path(path);
+                uploadFiles.upload_layer();
                 break;
             case 'soft_link': //软链接创建
                 this.set_soft_link();
@@ -2531,8 +2772,12 @@ var bt_file = {
             _api = '',
             _fname = [],
             _obj = {},
-            _path = $('');
+            _path = $('')
+            types = [];
         $.each(this.file_table_arry, function(index, item) {
+            if (item.type && types.indexOf(item.type) == -1) {
+                types.push(item.type)
+            }
             _fname.push(item.filename)
         })
         switch (stype) {
@@ -2562,6 +2807,15 @@ var bt_file = {
                 _obj['filename'] = _fname.join(',');
                 _obj['open'] = 'tar_gz'
                 _obj['path'] = that.file_path + '/' + file_title;
+                if (types.length > 1) {
+                    _obj['type_tips'] = '目录和文件';
+                } else if (types[0] == 'dir') {
+                    _obj['type_tips'] = '目录';
+                } else if (types[0] == 'file') {
+                    _obj['type_tips'] = '文件';
+                } else {
+                    _obj['type_tips'] = '';
+                }
                 return that.compress_file_or_dir(_obj, true)
                 break;
         }
@@ -2585,7 +2839,7 @@ var bt_file = {
      */
     batch_file_delect: function(obj) {
         var that = this;
-        if (this.is_recycle) {
+        if (that.is_recycle == 'true' || (typeof that.is_recycle == 'boolean' && that.is_recycle)) {
             layer.confirm('确认删除选中内容,删除后将移至回收站，是否继续操作?', { title: '批量删除', closeBtn: 2, icon: 3 }, function() {
                 that.$http('SetBatchData', obj, function(res) {
                     if (res.status) that.reader_file_list({ path: that.file_path })
@@ -2638,6 +2892,220 @@ var bt_file = {
 
         })
     },
+
+    /**
+     * @description 文件内容搜索替换
+     * @return void
+     */
+    replace_content_view: function() {
+        layer.open({
+            title: '文件内容查找',
+            type: 1,
+            skin: 'replace_content_view',
+            area: '700px',
+            zIndex:19900,
+            closeBtn: 2,
+            content: '<div class="replace_content_box" style="padding:20px 40px">' +
+                '<div class="replace_content_line">' +
+                    '<span class="tname">查找</span>' +
+                    '<div class="info-r">' +
+                    '<input class="bt-input-text" id="replaceContentValue" AUTOCOMPLETE="off" type="text" placeholder="请输入查找的文件内容" style="width:486px">' +
+                    '<i class="history_search iconfont icon-xiala"></i>'+
+                    '<button class="normalBtnStyle checkBtn" onClick="bt_file.searchReplaceContent()" style="vertical-align: top; ">查找</button>' +
+                    '<ul class="history_search_list hide"></ul>'+
+                    '</div>' +
+                '</div>' +
+                '<div class="replace_content_line">' +
+                    '<span class="tname">类型</span>' +
+                    '<div class="info-r">' +
+                    '<input name="replaceFileExtsType" id="replaceFileExtsType" class="bt-input-text" placeholder="例：php,html" type="text" value="html,php" style="width:570px">' +
+                    '</div>' +
+                '</div>' +
+                '<div class="replace_content_line" style="margin-bottom: 10px;">' +
+                    '<span class="tname">目录</span>' +
+                    '<div class="info-r">' +
+                        '<input class="bt-input-text" value="'+bt_file.file_path+'" type="text" style="width:570px" id="replaceContentPath">' +
+                        '<div class="file_path_switch replaceHasChild">' +
+                        '<i class="file_find_checkbox"></i>'+
+                        '<span class="laberText">包含子目录</span>' +
+                        '</div>' +
+                    '</div>' +
+                '</div>' +
+                '<div class="replace_content_line">' +
+                    '<span class="tname">模式</span>' +
+                    '<div class="info-r matchModel">' +
+                        '<div>' +
+                            '<div class="checkbox_config normalModel">' +
+                            '<i class="file_find_radio active"></i>'+
+                            '<span class="laberText">普通</span>' +
+                            '</div>' +
+                            '<div class="checkbox_config regularMatchRe">' +
+                            '<i class="file_find_radio"></i>'+
+                            '<span class="laberText">正则</span>' +
+                            '</div>' +
+                        '</div>' +
+                        '<div>' +
+                            '<div class="checkbox_config allMatchRe hide_option">' +
+                            '<i class="file_find_checkbox"></i>'+
+                            '<span class="laberText">全词匹配</span>' +
+                            '</div>' +
+                            '<div class="checkbox_config distinguishCaseRe">' +
+                            '<i class="file_find_checkbox"></i>'+
+                            '<span class="laberText">不区分大小写</span>' +
+                            '</div>' +
+                        '</div>' +
+                    '</div>' +
+                '</div>' +
+                '<div class="line match_container">'+
+                    '<div class="header">'+
+                    '<div class="tips-title matchRresult"></div>'+
+                    '</div>'+
+                    '<div class="main matchContent_main"><div style="color: #bcbcbc; font-size: 16px; text-align: center;line-height: 35px;">键入查找内容以在文件中查询</br><span style="font-size:14px">尝试查找选项能让范围缩小</span></div></div>'+
+                '</div>'+
+                '<span class="glyphicon cursor mr5 glyphicon-folder-open" onClick="bt.select_path(\'replaceContentPath\')"></span>' +
+            '</div>',
+            success:function(){
+                //单选、复选框按钮事件
+                $('.checkbox_config,.file_path_switch').click(function(e){
+                    if(e.target.localName == 'i' || e.target.localName == 'span'){
+                        var is_radio = $(this).find('i').hasClass('file_find_radio'),i_box = $(this).find('i');
+                        if(is_radio){//是否单选
+                            i_box.addClass('active').parent('div').siblings().find('i').removeClass('active');
+                            if($(this).find('.laberText').text() == '普通'){
+                                $('.hide_option').removeClass('hide')
+                            }else{  //正则模式下取消全词匹配
+                                $('.hide_option').addClass('hide').find('i').removeClass('active')
+                            }
+                        }else{//是否复选
+                            if(i_box.hasClass('active')){
+                                i_box.removeClass('active')
+                            }else{
+                                i_box.addClass('active')
+                            }
+                        }
+                    }
+                })
+                // 历史输入
+                $('.history_search').click(function(e){
+                    var list = JSON.parse(bt.get_cookie('file_search_list')),h_html = '';
+                    if($.type(list) === 'undefined' || list == null){
+                        h_html = '<span style=" padding: 5px 10px; ">暂无记录</span>';
+                        $('.history_search_list').html(h_html).removeClass('hide');
+                    }else{
+                        $('.history_search_list').empty();
+                        $.each(list,function(index,item){
+                            $('.history_search_list').append($('<li></li>').attr('data-key',item).text(item)).removeClass('hide')
+                        })
+                    }
+                    $(document).one('click', function() {
+                        $('.history_search_list').addClass('hide');
+                        e.stopPropagation();
+                    });
+                    e.stopPropagation();
+                })
+                //选择历史输入
+                $('.history_search_list').on('click','li',function(){
+                    $('#replaceContentValue').val($(this).data('key'));
+                    $('.history_search_list').addClass('hide');
+                })
+            }
+        })
+    },
+    /**
+     * @description 文件内容搜索結果
+     * @returns void
+     */
+    searchReplaceContent: function() {
+        var that = this,
+            file_num = 0,    //文件数量
+            match_num = 0,   //文件内查询到的数量
+            match_file_html = '',
+            data = {
+                text: $('#replaceContentValue').val(),
+                exts: $("#replaceFileExtsType").val() || 'html,php',
+                path: $('#replaceContentPath').val(),     //路径
+                is_subdir: !$('.replaceHasChild').find('i').hasClass('active') ? '0' : '1',    //0不包含子目录 1 包含子目录
+                mode: !$('.regularMatchRe').find('i').hasClass('active') ? '0' : '1',          //为普通模式 1 为正则模式
+                isword: !$('.allMatchRe').find('i').hasClass('active') ? '0' : '1',            //全词匹配 0 默认
+                iscase: !$('.distinguishCaseRe').find('i').hasClass('active') ? '0' : '1',     //不区分大小写 0 默认
+                noword: '0'        //不输出行信息 0 默认
+            }
+        this.$http('files_search',data,function(res) {
+            var reg = new RegExp("("+that.escodeChange(data.text)+")");
+            if(res.error) return layer.msg(res.error, {icon: 2});
+            if (data.text.indexOf('\n') < 0 && data.text != '') that.setSearchHistoryList(data.text);   //设置搜索历史列表
+            if($.isEmptyObject(res)){
+                $('.replace_content_view .matchContent_main').html('<div style=" color: #bcbcbc; font-size: 16px; text-align: center; ">沒有搜索到任何数据</div>')
+                $('.matchRresult').html('')
+                return
+            }
+            $.each(res,function(fileName,item){
+                file_num++;
+                var contentNum = Object.keys(item).length
+                match_file_html+='<div class="match_content_item" data-file="'+fileName+'">'+
+                        '<div class="match_content_title">'+
+                            '<span class="match_result_file_title" title="'+fileName+'&nbsp;&nbsp;(匹配'+contentNum+'次)"><i class="glyphicon glyphicon-triangle-bottom"></i>'+fileName+'&nbsp;&nbsp;(匹配'+contentNum+'次)</span>'+
+                            '<a class="btlink pull-right editFile" data-filename="'+fileName+'">编辑</a>'+
+                        '</div>'+
+                        '<div class="match_result_file_content matchShow">'
+                $.each(item,function(index,lineItem){
+                    match_num++
+                    var html = $('<div></div>').text(lineItem.trim()).html().replace(reg,'<i style="font-weight: bold">'+ $('<div></div>').text(data.text).html() +'</i>')
+                    match_file_html += '<div class="match_result_detail"><span style="font-weight: bold">行'+index+'</span>:&nbsp;&nbsp;&nbsp;&nbsp;'+html+'</div>';
+                })
+                match_file_html+= '</div></div>'
+            })
+            $('.matchRresult').html('查找结果：在<span style="font-weight: bold;">'+ file_num +'</span>个文件中有<span style="color: #20a53a;">'+ match_num +'</span>个匹配项')
+            $('.matchContent_main').html(match_file_html);
+            // 隐藏显示内容
+            $('.matchContent_main .match_result_file_title').click(function(e){
+                var parent_box = $(this).parents('.match_content_item'),
+                    is_icon_top = $(this).find('i').hasClass('glyphicon-triangle-top')   //是否图标向上（未打开）
+                if(is_icon_top){
+                    parent_box.find('.match_result_file_content').addClass('matchShow')
+                    $(this).find('i').removeClass('glyphicon-triangle-top').addClass('glyphicon-triangle-bottom')
+                }else{
+                    $(this).find('i').removeClass('glyphicon-triangle-bottom').addClass('glyphicon-triangle-top')
+                    parent_box.find('.match_result_file_content').removeClass('matchShow')
+                }
+                e.stopPropagation()
+            })
+            //编辑跳转
+            $('.editFile').click(function(){
+                openEditorView(0,$(this).data('filename'),function(val,aceEitor){
+                    aceEitor.ace.find(data.text)
+                    aceEitor.ace.execCommand('find')
+                })
+            })
+        })
+    },
+    /**
+     * @description 设置搜索历史列表
+     * @param {String} text 查找的文本
+     * @returns void
+     */
+    setSearchHistoryList:function(text){
+        var h_cookie = JSON.parse(bt.get_cookie('file_search_list'));
+        if($.type(h_cookie) === 'undefined' || h_cookie == null){
+            bt.set_cookie('file_search_list', JSON.stringify([text]))
+        }else{
+            if($.inArray(text,h_cookie) != -1) return true;   //如果已在列表中则跳过
+            h_cookie.unshift(text)   //数组首位添加查找内容
+            if(h_cookie.length > 7) h_cookie.pop()   //超过7位时删除最后一条搜索记录
+            bt.set_cookie('file_search_list', JSON.stringify(h_cookie))
+        }
+    },
+    /**
+     * @description 转义查找输入的内容特殊字符
+     * @param {String} e 查找的内容
+     * @returns 返回转义结果
+     */
+    escodeChange:function(e){
+        if(/(\+|\-|\$|\||\!|\(|\)|\{|\}|\[|\]|\^|\”|\~|\*|\?|\:|\\)/g.test(e)){
+            e = e.replace(/(\+|\-|\$|\||\!|\(|\)|\{|\}|\[|\]|\^|\”|\~|\*|\?|\:|\\)/g,'\\$1').replace(/&/g, "&amp;").replace(/\>/g, "&gt;").replace(/\</g, "&lt;");
+        }
+        return e
+    },
     /**
      * @description 回收站视图
      * @return void
@@ -2686,82 +3154,14 @@ var bt_file = {
                 } else {
                     $(".re-con-menu p:eq(0)").click();
                 }
-                var render_recycle = that.render_recycle_list();
+                var render_config = that.render_recycle_list();
                 $(".re-con-menu").on('click', 'p', function() {
                     var _type = $(this).data('type');
                     $(this).addClass("on").siblings().removeClass("on");
-                    render_recycle.$refresh_table_list(true);
+                    render_config.$refresh_table_list(true);
                 });
             }
         })
-
-
-
-
-        // layer.open({
-        //     type: 1,
-        //     shift: 5,
-        //     closeBtn: 2,
-        //     area: ['80%', '606px'],
-        //     title: lan.files.recycle_bin_title,
-        //     content: '<div class="recycle_bin_view">\
-        //             <div class="re-head">\
-        //             <div style="margin-left: 3px;" class="ss-text">\
-        //                 <em>' + lan.files.recycle_bin_on + '</em>\
-        //                 <div class="ssh-item">\
-        //                         <input class="btswitch btswitch-ios" id="Set_Recycle_bin" type="checkbox">\
-        //                         <label class="btswitch-btn" for="Set_Recycle_bin" onclick="bt_file.Set_Recycle_bin()"></label>\
-        //                 </div>\
-        //                 <em style="margin-left: 20px;">' + lan.files.recycle_bin_on_db + '</em>\
-        //                 <div class="ssh-item">\
-        //                         <input class="btswitch btswitch-ios" id="Set_Recycle_bin_db" type="checkbox">\
-        //                         <label class="btswitch-btn" for="Set_Recycle_bin_db" onclick="bt_file.Set_Recycle_bin(1)"></label>\
-        //                 </div>\
-        //             </div>\
-        //             <span style="line-height: 32px; margin-left: 30px;">' + lan.files.recycle_bin_ps + '</span>\
-        //             <button style="float: right" class="btn btn-default btn-sm" onclick="bt_file.CloseRecycleBin();">' + lan.files.recycle_bin_close + '</button>\
-        //             </div>\
-        //             <div class="re-con">\
-        //                 <div class="re-con-menu">\
-        //                     <p class="on" data-type="1">' + lan.files.recycle_bin_type1 + '</p>\
-        //                     <p data-type="2">' + lan.files.recycle_bin_type2 + '</p>\
-        //                     <p data-type="3">' + lan.files.recycle_bin_type3 + '</p>\
-        //                     <p data-type="4">' + lan.files.recycle_bin_type4 + '</p>\
-        //                     <p data-type="5">' + lan.files.recycle_bin_type5 + '</p>\
-        //                     <p data-type="6">' + lan.files.recycle_bin_type6 + '</p>\
-        //                 </div>\
-        //                 <div class="re-con-con">\
-        //                     <div style="margin: 15px;" class="divtable">\
-        //                         <table width="100%" class="table table-hover">\
-        //                             <thead>\
-        //                                 <tr>\
-        //                                     <th>' + lan.files.recycle_bin_th1 + '</th>\
-        //                                     <th>' + lan.files.recycle_bin_th2 + '</th>\
-        //                                     <th>' + lan.files.recycle_bin_th3 + '</th>\
-        //                                     <th width="150">' + lan.files.recycle_bin_th4 + '</th>\
-        //                                     <th style="text-align: right;" width="110">' + lan.files.recycle_bin_th5 + '</th>\
-        //                                 </tr>\
-        //                             </thead>\
-        //                             <tbody id="RecycleBody" class="list-list"></tbody>\
-        //                         </table>\
-        //                     </div>\
-        //                 </div>\
-        //             </div>\
-        //         </div>',
-        //     success: function() {
-        //         if (window.location.href.indexOf("database") != -1) {
-        //             $(".re-con-menu p:last-child").addClass("on").siblings().removeClass("on");
-        //             that.render_recycle_list(6)
-        //         } else {
-        //             that.render_recycle_list(1)
-        //         }
-        //         $(".re-con-menu").on('click', 'p', function() {
-        //             var _type = $(this).data('type');
-        //             $(this).addClass("on").siblings().removeClass("on");
-        //             that.render_recycle_list(_type);
-        //         })
-        //     }
-        // })
     },
     // 回收站渲染列表
     render_recycle_list: function() {
@@ -2775,12 +3175,12 @@ var bt_file = {
                 var files = [];
                 switch($('.re-con-menu p.on').index()){
                     case 0:
-                        for (let i = 0; i < res.dirs.length; i++){
-                            const item = res.dirs[i];
+                        for (var i = 0; i < res.dirs.length; i++){
+                            var item = res.dirs[i];
                             files.push($.extend(item,{type:'folder'}));
                         }
-                        for (let j = 0; j < res.files.length; j++){
-                            const item = res.files[j],ext_list =  item.dname.split('.') ,ext = that.determine_file_type(ext_list[ext_list.length - 1]);
+                        for (var j = 0; j < res.files.length; j++){
+                            var item = res.files[j],ext_list =  item.dname.split('.') ,ext = that.determine_file_type(ext_list[ext_list.length - 1]);
                             if(item.name.indexOf('BTDB_') > -1) {
                                 item.dname = item.dname.replace('BTDB_', '');
                                 item.name = item.name.replace('BTDB_', '');
@@ -2791,50 +3191,53 @@ var bt_file = {
                                 files.push($.extend(item,{type:'files'}));
                             }
                         }
-                    break;
+                        break;
                     case 1:
-                        for (let i = 0; i < res.dirs.length; i++){
-                            const item = res.dirs[i];
-                            files.push($.extend(item,{type:'files'}));
+                        for (var i = 0; i < res.dirs.length; i++){
+                            var item = res.dirs[i];
+                            files.push($.extend(item,{type:'folder'}));
                         }
-                    break;
+
+                        break;
                     case 2:
-                        for (let j = 0; j < res.files.length; j++){
-                            const item = res.files[j],ext_list =  item.dname.split('.') ,ext = that.determine_file_type(ext_list[ext_list.length - 1]);
+                        for (var j = 0; j < res.files.length; j++){
+                            var item = res.files[j],ext_list =  item.dname.split('.') ,ext = that.determine_file_type(ext_list[ext_list.length - 1]);
                             if(item.name.indexOf('BTDB') == -1) files.push($.extend(item,{type:ext}));
                         }
-                    break;
+                        break;
                     case 3:
-                        for (let j = 0; j < res.files.length; j++){
-                            const item = res.files[j],ext_list =  item.dname.split('.') ,ext = that.determine_file_type(ext_list[ext_list.length - 1]);
+                        for (var j = 0; j < res.files.length; j++){
+                            var item = res.files[j],ext_list =  item.dname.split('.') ,ext = that.determine_file_type(ext_list[ext_list.length - 1]);
                             if(ext == 'images') files.push($.extend(item,{type:ext}));
                         }
- 
-                    break;
+
+                        break;
                     case 4:
-                        for (let j = 0; j < res.files.length; j++){
-                            const item = res.files[j],ext_list =  item.dname.split('.') ,ext = that.determine_file_type(ext_list[ext_list.length - 1]);
+                        for (var j = 0; j < res.files.length; j++){
+                            var item = res.files[j],ext_list =  item.dname.split('.') ,ext = that.determine_file_type(ext_list[ext_list.length - 1]);
                             if(ext != 'images' && ext != 'compress' && ext != 'video' && item.name.indexOf('BTDB') == -1) files.push($.extend(item,{type:ext}));
                         }
-                    break;
+                        break;
                     case 5:
-                        for (let j = 0; j < res.files.length; j++){
-                            const item = res.files[j];
+                        for (var j = 0; j < res.dirs.length; j++){
+                            var item = res.dirs[j];
                             if(item.name.indexOf('BTDB_') > -1){
                                 item.dname = item.dname.replace('BTDB_','');
                                 item.name = item.name.replace('BTDB_','');
-                                console.log()
                                 files.push($.extend(item,{type:'files'}));
                             }
                         }
-                    break;
+                        // for (var filesKey in files) {
+                        //     if(files.hasOwnProperty(filesKey))
+                        // }
+                        break;
                 }
                 $('#Set_Recycle_bin').attr('checked', res.status);
                 $('#Set_Recycle_bin_db').attr('checked', res.status_db);
                 return {data:files}
             },
             column:[
-                {type:'checkbox',class:'',width:18},
+                {type:'checkbox','class':'',width:18},
                 {fid:'name',title:lan.files.recycle_bin_th1,width:155,template:function(row){
                     return '<div class="text-overflow" title="'+ row.name +'"><i class="file_icon file_'+ row.type +'"></i><span style="width:100px">'+ row.name +'</span></div>';
                 }},
@@ -2857,7 +3260,7 @@ var bt_file = {
                 },{
                     title:lan.files.recycle_bin_del,
                     event:function(row, index, ev, key, that){
-                        bt_file.DelRecycleBin(row.rname,function(){
+                        bt_file.DelRecycleBin(row,function(){
                             that.$delete_table_row(index);
                         });
                     }
@@ -2871,55 +3274,55 @@ var bt_file = {
                 disabledSelectValue: '请选择需要批量操作的端口!',
                 selectList:[{
                     title:"恢复",
-					url:'/files?action=Re_Recycle_bin',
-					load:true,
-					param:function(row){
-						return {path:row.rname};
-					},
-					callback:function(that){
-						bt.confirm({title:'批量恢复文件',msg:'是否批量恢复选中的文件，是否继续？',icon:0},function(index){
-							layer.close(index);
-							that.start_batch({},function(list){
-								var html = '';
-								for(var i=0;i<list.length;i++){
-									var item = list[i];
-									html += '<tr><td>'+ item.name +'</td><td><div style="float:right;"><span style="color:'+ (item.request.status?'#20a53a':'red') +'">'+ (item.request.status?'恢复成功':'恢复失败') +'</span></div></td></tr>';
-								}
-								recycle_list.$batch_success_table({title:'批量恢复文件',th:'文件名称',html:html});
-								recycle_list.$refresh_table_list(true);
-							});
-						});
-					}
+                    url:'/files?action=Re_Recycle_bin',
+                    load:true,
+                    param:function(row){
+                        return {path:row.rname};
+                    },
+                    callback:function(that){
+                        bt.confirm({title:'批量恢复文件',msg:'是否批量恢复选中的文件，是否继续？',icon:0},function(index){
+                            layer.close(index);
+                            that.start_batch({},function(list){
+                                var html = '';
+                                for(var i=0;i<list.length;i++){
+                                    var item = list[i];
+                                    html += '<tr><td>'+ item.name +'</td><td><div style="float:right;"><span style="color:'+ (item.request.status?'#20a53a':'red') +'">'+ (item.request.status?'恢复成功':'恢复失败') +'</span></div></td></tr>';
+                                }
+                                recycle_list.$batch_success_table({title:'批量恢复文件',th:'文件名称',html:html});
+                                recycle_list.$refresh_table_list(true);
+                            });
+                        });
+                    }
                 },{
                     title:"永久删除文件",
-					url:'/files?action=Del_Recycle_bin',
-					load:true,
-					param:function(row){
-						return {path:row.rname};
-					},
-					callback:function(that){
-						bt.confirm({title:'批量删除文件',msg:'是否批量删除选中的文件，文件将彻底删除，不可恢复，是否继续？',icon:0},function(index){
-							layer.close(index);
-							that.start_batch({},function(list){
-								var html = '';
-								for(var i=0;i<list.length;i++){
-									var item = list[i];
-									html += '<tr><td>'+ item.name +'</td><td><div style="float:right;"><span style="color:'+ (item.request.status?'#20a53a':'red') +'">'+ (item.request.status?'删除成功':'删除失败') +'</span></div></td></tr>';
-								}
-								recycle_list.$batch_success_table({title:'批量删除文件',th:'文件名称',html:html});
-								recycle_list.$refresh_table_list(true);
-							});
-						});
-					}
+                    url:'/files?action=Del_Recycle_bin',
+                    load:true,
+                    param:function(row){
+                        return {path:row.rname};
+                    },
+                    callback:function(that){
+                        bt.confirm({title:'批量删除文件',msg:'是否批量删除选中的文件，文件将彻底删除，不可恢复，是否继续？',icon:0},function(index){
+                            layer.close(index);
+                            that.start_batch({},function(list){
+                                var html = '';
+                                for(var i=0;i<list.length;i++){
+                                    var item = list[i];
+                                    html += '<tr><td>'+ item.name +'</td><td><div style="float:right;"><span style="color:'+ (item.request.status?'#20a53a':'red') +'">'+ (item.request.status?'删除成功':'删除失败') +'</span></div></td></tr>';
+                                }
+                                recycle_list.$batch_success_table({title:'批量删除文件',th:'文件名称',html:html});
+                                recycle_list.$refresh_table_list(true);
+                            });
+                        });
+                    }
                 }]
             }]
         });
         bt_tools.$fixed_table_thead('#recycle_table .divtable');
-        return recycle_list;
+        return recycle_list
     },
     // 回收站开关
     Set_Recycle_bin: function(db) {
-        var loadT = layer.msg(lan.public.the, { icon: 16, time: 0, shade: [0.3, '#000'] });
+        var loadT = layer.msg(lan['public'].the, { icon: 16, time: 0, shade: [0.3, '#000'] });
         var that = this,
             data = {}
         if (db == 1) {
@@ -2928,7 +3331,11 @@ var bt_file = {
         $.post('/files?action=Recycle_bin', data, function(rdata) {
             layer.close(loadT);
             if (rdata.status) {
-                if (db == undefined) that.is_recycle = $('#Set_Recycle_bin').prop('checked');
+                if (db == undefined){
+                    var _status = $('#Set_Recycle_bin').prop('checked')
+                    that.is_recycle = _status;
+                    bt.set_cookie('file_recycle_status',_status);
+                } 
             }
             layer.msg(rdata.msg, { icon: rdata.status ? 1 : 5 });
         });
@@ -2945,10 +3352,10 @@ var bt_file = {
         });
     },
     //回收站删除
-    DelRecycleBin: function(path,callback) {
-        layer.confirm(lan.files.recycle_bin_del_msg, { title: lan.files.recycle_bin_del_title, closeBtn: 2, icon: 3 }, function() {
-            var loadT = layer.msg(lan.files.recycle_bin_del_the, { icon: 16, time: 0, shade: [0.3, '#000'] });
-            $.post('/files?action=Del_Recycle_bin', 'path=' + encodeURIComponent(path), function(rdata) {
+    DelRecycleBin: function(row,callback) {
+      bt.prompt_confirm(lan.files.recycle_bin_del_title, '您确定要删除文件['+ row.name +']吗，该操作将<span style="color:red;">永久删除该文件</span>，是否继续操作？', function () {
+          var loadT = layer.msg(lan.files.recycle_bin_del_the, { icon: 16, time: 0, shade: [0.3, '#000'] });
+            $.post('/files?action=Del_Recycle_bin', 'path=' + encodeURIComponent(row.rname), function(rdata) {
                 layer.close(loadT);
                 layer.msg(rdata.msg, { icon: rdata.status ? 1 : 5 });
                 if(callback) callback(rdata)
@@ -2958,8 +3365,7 @@ var bt_file = {
     //清空回收站
     CloseRecycleBin: function() {
       var _this = this;
-        layer.confirm(lan.files.recycle_bin_close_msg, { title: lan.files.recycle_bin_close, closeBtn: 2, icon: 3 }, function() {
-          var loadT = layer.msg("<div class='myspeed'>" + lan.files.recycle_bin_close_the + "</div>", { icon: 16, time: 0, shade: [0.3, '#000'] });
+      bt.prompt_confirm(lan.files.recycle_bin_close, '您确定要清空回收站吗，该操作将<span style="color:red;">永久删除文件</span>，是否继续操作？', function () {          var loadT = layer.msg("<div class='myspeed'>" + lan.files.recycle_bin_close_the + "</div>", { icon: 16, time: 0, shade: [0.3, '#000'] });
           setTimeout(function() {
             getSpeed('.myspeed');
           }, 1000);
@@ -2971,21 +3377,18 @@ var bt_file = {
           });
         });
     },
-
-    /**
-     * @description 打开属性视图
+    /**0
      * @param {Object} data 当前文件的数据对象
      * @return void
     */
     open_property_view:function (data) { 
-      console.log(data)
       var _this = this;
       _this.$http('get_file_attribute',{filename:data.path},function (res) { 
         layer.open({
           type: 1,
           closeBtn: 2,
           title: '[ ' + data.filename +' ] - '+ (data.is_dir?'文件夹':'文件') +'属性',
-          area: ["580px", "500px"],
+          area: ["580px", "520px"],
           shadeClose: false,
           // btn:['确认','取消'],
           content:'<div class="bt-property-setting pd15">\
@@ -3087,8 +3490,8 @@ var bt_file = {
                 html += '<tr><td><div style="width:110px">'+ ($.isArray(element)?element[0]:element) +'</div></td><td><div class="ellipsis" style="width:400px" title="'+ value +'">'+ value +'</div></td></tr>';
               }
             }
-            for (let i = 0; i < res.history.length; i++) {
-              const item = res.history[i];
+            for (var i = 0; i < res.history.length; i++) {
+              var item = res.history[i];
               html2 += '<tr><td><div style="width:140px;">'+ bt.format_data(item.st_mtime) +'</div></td><td><div style="width:85px;">'+ bt.format_size(item.st_size) +'</div></td><td><div>'+ item.md5 +'</div></td><td><div style="width:90px;text-align:right;"><a href="javascript:;" class="btlink open_history_file" data-time="'+ item.st_mtime +'">查看</a>&nbsp;&nbsp;|&nbsp;&nbsp;<a href="javascript:;" class="btlink recovery_file_historys" data-history="'+ item.st_mtime +'" data-path="'+ data.path +'">恢复</a></div></td></tr>'
             }
             if(html2 === '') html2 += '<tr><td colspan="4"><div style="text-align: center;">当前文件无历史版本</div></td></tr>'
@@ -3413,6 +3816,7 @@ var bt_file = {
      */
     copy_file_or_dir: function(data) {
         bt.set_cookie('record_paste', data.path);
+        bt.set_cookie('record_paste_fileType', data.type);
         bt.set_cookie('record_paste_type', 'copy');
         $('.file_all_paste').removeClass('hide');
         layer.msg('复制成功，请点击粘贴按钮，或Ctrl+V粘贴');
@@ -3425,6 +3829,7 @@ var bt_file = {
      */
     cut_file_or_dir: function(data) {
         bt.set_cookie('record_paste', data.path);
+        bt.set_cookie('record_paste_fileType', data.type);
         bt.set_cookie('record_paste_type', 'cut');
         $('.file_all_paste').removeClass('hide');
         layer.msg('剪切成功，请点击粘贴按钮，或Ctrl+V粘贴');
@@ -3436,11 +3841,12 @@ var bt_file = {
     paste_file_or_dir: function() {
         var that = this,
             _isPaste = bt.get_cookie('record_paste_type'),
+            _fileType = bt.get_cookie('record_paste_fileType'),
             _paste = bt.get_cookie('record_paste'),
             _filename = '';
         if (_paste != 'null' && _paste != undefined) _filename = _paste.split('/').pop()
-        if (that.file_path.indexOf(_paste) > -1) {
-            layer.msg('文件夹禁止粘贴到项目本身！', { icon: 0 });
+        if (_fileType == 'dir' && this.file_path.indexOf(_paste) > -1) {
+            layer.msg('错误的复制逻辑，从' + _paste + '粘贴到' + this.file_path + '有包含关系，存在无限循环复制风险!', { icon: 0,time: 0,shade: 0.3,shadeClose: true });
             return false;
         }
         if (_isPaste != 'null' && _isPaste != undefined) {
@@ -3479,10 +3885,12 @@ var bt_file = {
      */
     config_paste_to: function(path, _filename) {
         var that = this,
+            dfile = this.file_path + '/' + _filename,
             _type = bt.get_cookie('record_paste_type');
-        this.$http(_type == 'copy' ? 'CopyFile' : 'MvFile', { sfile: path, dfile: (this.file_path + '/' + _filename) }, function(rdata) {
+        this.$http(_type == 'copy' ? 'CopyFile' : 'MvFile', { sfile: path, dfile: dfile }, function(rdata) {
             if (rdata.status) {
                 bt.set_cookie('record_paste', null);
+                bt.set_cookie('record_paste_fileType', null);
                 bt.set_cookie('record_paste_type', null);
                 that.reader_file_list({ path: that.file_path })
             }
@@ -3627,7 +4035,7 @@ var bt_file = {
                 '<div class="line external_link" style="' + (data.password == "" ? "display:none;" : "display:block") + '"><span class="tname">提取码</span><div class="info-r"><input readonly class="bt-input-text mr5" type="text" style="width:243px" value="' + data.password + '"><button type="button" data-clipboard-text="链接:' + download_url + ' 提取码:' + data.password + '"  class="btn btn-success copy_paw btn-sm btn-title">复制链接及提取码</button></div></div>' +
                 '<div class="line"><span class="tname">过期时间</span><div class="info-r"><span style="line-height:32px; display: block;font-size:14px">' + ((data.expire > (new Date('2099-01-01 00:00:00').getTime()) / 1000) ? '<span calss="btlink">永久有效</span>' : bt.format_data(data.expire)) + '</span></div></div>' +
                 '<div class="bt-form-submit-btn">' +
-                '<button type="button" class="btn btn-danger btn-sm btn-title layer_close">' + lan.public.close + '</button>' +
+                '<button type="button" class="btn btn-danger btn-sm btn-title layer_close">' + lan['public'].close + '</button>' +
                 '<button type="button" id="down_del" class="btn btn-danger btn-sm btn-title close_down" style="color:#fff;background-color:#c9302c;border-color:#ac2925;" onclick="">关闭分享外链</button>' +
                 '</div>' +
                 '</div>',
@@ -3684,7 +4092,7 @@ var bt_file = {
      */
     del_file_or_dir: function(data) {
         var that = this;
-        if (that.is_recycle) {
+        if (that.is_recycle == 'true' || (typeof that.is_recycle == 'boolean' && that.is_recycle)) {
             bt.confirm({
                 title: '删除' + data.type_tips + '[&nbsp;' + data.filename + '&nbsp;]',
                 msg: '<span>您确定要删除该' + data.type_tips + '[&nbsp;' + data.path + '&nbsp;]吗，删除后将移至回收站，是否继续操作?</span>'
@@ -3735,34 +4143,58 @@ var bt_file = {
             title:'创建软链接',
             area:'520px',
             content:{
-                class:'pd20',
+                'class':'pd20',
                 formLabelWidth:'110px',
-                form:[{
-                    label:'文件夹或目录',
-                    group:{
-                        type:'text',
-                        name:'sfile',
-                        width:'280px',
-                        placeholder:'请选择需要创建的软链的文件夹和文件',
-                        icon:{type:'glyphicon-folder-open',event:function(ev){},select:'all'},
-                        value:'',
-                        input:function(ev){
-                            console.log(arguments);
+                form:[
+                    {
+                        label: "名称",
+                        group: {
+                            type: "text",
+                            name: "name",
+                            width: "280px",
+                            placeholder: "请输入软链接名称",
+                            value: ""
+                        }
+                    },
+                    {
+                        label:'链接到',
+                        group:{
+                            type:'text',
+                            name:'sfile',
+                            width:'280px',
+                            placeholder:'请选择需要创建的软链的文件夹和文件',
+                            icon:{type:'glyphicon-folder-open',event:function(ev){},select:'all'},
+                            value:'',
+                            input:function(ev){
+                                console.log(arguments);
+                            }
+                        }
+                    },
+                    {
+                        label:'',
+                        group:{
+                            type:'help',
+                            style:{'margin-top':'0'},
+                            'class':'none-list-style',
+                            list:['提示：请选择需要创建的软链的文件夹和文件']
                         }
                     }
-                },{
-                    label:'',
-                    group:{
-                        type:'help',
-                        style:{'margin-top':'0'},
-                        class:'none-list-style',
-                        list:['提示：请选择需要创建的软链的文件夹和文件']
+                ]
+            },
+            init: function () {
+                var e = null, t = setInterval(function() {
+                    if ($('input[name="sfile"]').length < 1 && clearInterval(t),e != $('input[name="sfile"]').val()){
+                        e = $('input[name="sfile"]').val();
+                        var i = e.split("/");
+                        i.length > 1 && $('[name="name"]').val(i[i.length - 1])
                     }
-                }]
+                }, 100)
             },
             yes:function(data,indexs,layero){
-                var sfile = data.sfile,dirList = sfile.split('/');
-                data = $.extend(data,{dfile:that.file_path + '/' + dirList[dirList.length -1]})
+                data = $.extend(data, {dfile: that.file_path + "/" + data.name});
+                delete data.name;
+                // var sfile = data.sfile,dirList = sfile.split('/');
+                // data = $.extend(data,{dfile:that.file_path + '/' + dirList[dirList.length -1]})
                 bt_tools.send('files/CreateLink',data,function(res) {
                     if(res.status){
                         layer.close(indexs);
@@ -3818,8 +4250,8 @@ var bt_file = {
                             <span><input type="checkbox" id="accept_all" checked /><label for="accept_all" style="position: absolute;margin-top: 4px; margin-left: 5px;font-weight: 400;">应用到子目录</label></span>\
                             </div>\
                             <div class="bt-form-submit-btn">\
-                                <button type="button" class="btn btn-danger btn-sm btn-title layer_close">' + lan.public.close + '</button>\
-                                <button type="button" class="btn btn-success btn-sm btn-title set_access_authority">' + lan.public.ok + '</button>\
+                                <button type="button" class="btn btn-danger btn-sm btn-title layer_close">' + lan['public'].close + '</button>\
+                                <button type="button" class="btn btn-success btn-sm btn-title set_access_authority">' + lan['public'].ok + '</button>\
                             </div>\
                         </div>',
                 success: function(index, layers) {
@@ -4335,7 +4767,6 @@ var bt_file = {
      */
     compress_file_or_dir: function(data, isbatch) {
         var that = this;
-        console.log(data);
         $('.selection_right_menu').removeAttr('style');
         this.reader_form_line({
             url: 'Zip',
@@ -4465,6 +4896,19 @@ var bt_file = {
         });
     },
 
+    /**
+     * @description 获取替换内容
+     * @param {Object} data 请求传入参数
+     * @param {Function} callback 回调参数
+     * @returns void
+     */
+    get_replace_log: function() {
+        bt_tools.send('files/GetDir', $.extend({
+            p: 1,
+            showRow:bt.get_storage('local','showRow') || that.file_page_num,
+            path: bt.get_cookie('Path') || data.path
+        }, data), { tips: false });
+    },
     /**
      * @description 匹配非法字符
      * @param {Array} item 配置对象
@@ -4601,6 +5045,7 @@ var bt_file = {
         if (typeof data == "string") {
             if (typeof parem != "object") callback = parem, parem = {};
             if (!Array.isArray(that.method_list[data])) that.method_list[data] = ['files', that.method_list[data]];
+            // console.log(that.method_list[data])
             that.$http({ method: data, tips: (that.method_list[data][1] ? '正在' + that.method_list[data][1] + '，请稍候...' : false), module: that.method_list[data][0], data: parem, msg: true }, callback);
         } else {
             if (typeof data.tips != 'undefined' && data.tips) loadT = bt.load(data.tips);

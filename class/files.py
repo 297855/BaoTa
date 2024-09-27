@@ -7,6 +7,8 @@
 # +-------------------------------------------------------------------
 # | Author: hwliang <hwl@bt.cn>
 # +-------------------------------------------------------------------
+from base64 import b64encode
+from email.mime import base
 import sys
 import os
 import public
@@ -23,6 +25,7 @@ class files:
     run_path = None
     download_list = None
     download_is_rm = None
+    recycle_list = []
     # 检查敏感目录
 
     def CheckDir(self, path):
@@ -54,6 +57,7 @@ class files:
                  '/selinux',
                  '/www/server',
                  '/www/server/data',
+                 '/www/.Recycle_bin',
                  public.GetConfigValue('logs_path'),
                  public.GetConfigValue('setup_path'))
 
@@ -112,7 +116,7 @@ session.save_handler = files'''.format(path, sess_path, sess_path)
             siteName = find['name']
             sitePath = find['path']
             if public.get_webserver() == 'nginx':
-                filename = '/www/server/panel/vhost/nginx/' + siteName + '.conf'
+                filename = public.get_vhost_path() + '/nginx/' + siteName + '.conf'
                 if os.path.exists(filename):
                     conf = public.readFile(filename)
                     rep = '\s*root\s+(.+);'
@@ -120,7 +124,7 @@ session.save_handler = files'''.format(path, sess_path, sess_path)
                     if tmp1:
                         path = tmp1.groups()[0]
             else:
-                filename = '/www/server/panel/vhost/apache/' + siteName + '.conf'
+                filename = public.get_vhost_path() + '/apache/' + siteName + '.conf'
                 if os.path.exists(filename):
                     conf = public.readFile(filename)
                     rep = '\s*DocumentRoot\s*"(.+)"\s*\n'
@@ -214,6 +218,37 @@ session.save_handler = files'''.format(path, sess_path, sess_path)
                 return False
         return True
 
+    # 上传前检查文件是否存在
+    def upload_file_exists(self,args):
+        '''
+            @name 上传前检查文件是否存在
+            @author hwliang<2021-11-3>
+            @param filename<string> 文件名
+            @return dict
+        '''
+        filename = args.filename.strip()
+        if not os.path.exists(filename):
+            return public.returnMsg(False,'指定文件不存在')
+        file_info = {}
+        _stat = os.stat(filename)
+        file_info['size'] = _stat.st_size
+        file_info['mtime'] = int(_stat.st_mtime)
+        file_info['isfile'] = os.path.isfile(filename)
+        return public.returnMsg(True,file_info)
+
+
+    def get_real_len(self,string):
+        '''
+            @name 获取含中文的字符串字精确长度
+            @author hwliang<2021-11-3>
+            @param string<str>
+            @return int
+        '''
+        real_len = len(string)
+        for s in string:
+            if '\u2E80' <= s <= '\uFE4F':
+                real_len += 1
+        return real_len
 
     # 上传文件2
     def upload(self, args):
@@ -226,9 +261,12 @@ session.save_handler = files'''.format(path, sess_path, sess_path)
         if sys.version_info[0] == 2:
             args.f_name = args.f_name.encode('utf-8')
             args.f_path = args.f_path.encode('utf-8')
+        try:
+            if self.get_real_len(args.f_name) > 128: return public.returnMsg(False,'文件名长度超过128个字节')
+        except:
+            pass
+        if not self.f_name_check(args.f_name): return public.returnMsg(False,'文件名中包含特殊字符!')
 
-        
-        if not self.f_name_check(args.f_name): return public.returnMsg(False,'文件名中不能包含特殊字符!')
 
         if args.f_path == '/':
             return public.returnMsg(False,'不能直接上传文件到系统根目录!')
@@ -247,16 +285,21 @@ session.save_handler = files'''.format(path, sess_path, sess_path)
             d_size = os.path.getsize(save_path)
         if d_size != int(args.f_start):
             return d_size
-        f = open(save_path, 'ab')
-        if 'b64_data' in args:
-            import base64
-            b64_data = base64.b64decode(args.b64_data)
-            f.write(b64_data)
-        else:
-            upload_files = request.files.getlist("blob")
-            for tmp_f in upload_files:
-                f.write(tmp_f.read())
-        f.close()
+        try:
+            f = open(save_path, 'ab')
+            if 'b64_data' in args:
+                import base64
+                b64_data = base64.b64decode(args.b64_data)
+                f.write(b64_data)
+            else:
+                upload_files = request.files.getlist("blob")
+                for tmp_f in upload_files:
+                    f.write(tmp_f.read())
+            f.close()
+        except Exception as ex:
+            ex = str(ex)
+            if ex.find('No space left on device') != -1:
+                return public.returnMsg(False, '磁盘空间不足')
         f_size = os.path.getsize(save_path)
         if f_size != int(args.f_size):
             return f_size
@@ -288,6 +331,7 @@ session.save_handler = files'''.format(path, sess_path, sess_path)
 
     # 设置文件和目录权限
     def set_mode(self, path):
+        if path[-1] == '/': path = path[:-1]
         s_path = os.path.dirname(path)
         p_stat = os.stat(s_path)
         os.chown(path, p_stat.st_uid, p_stat.st_gid)
@@ -323,22 +367,29 @@ session.save_handler = files'''.format(path, sess_path, sess_path)
     def GetDir(self, get):
         if not hasattr(get, 'path'):
             # return public.returnMsg(False,'错误的参数!')
-            get.path = '/www/wwwroot'
+            get.path = public.get_site_path() #'/www/wwwroot'
         if sys.version_info[0] == 2:
             get.path = get.path.encode('utf-8')
         if get.path == '':
             get.path = '/www'
+
+        # 转换包含~的路径
+        if get.path.find('~') != -1:
+            get.path = os.path.expanduser(get.path)
+
         get.path = self.xssdecode(get.path)
         if not os.path.exists(get.path):
-            get.path = '/www/wwwroot'
+            get.path = public.get_site_path()
             #return public.ReturnMsg(False, '指定目录不存在!')
-        if get.path == '/www/Recycle_bin':
+        if os.path.basename(get.path) == '.Recycle_bin':
             return public.returnMsg(False, '此为回收站目录，请在右上角按【回收站】按钮打开')
         if not os.path.isdir(get.path):
             get.path = os.path.dirname(get.path)
+        
 
         if not os.path.isdir(get.path):
             return public.returnMsg(False, '这不是一个目录!')
+            
 
         import pwd
         dirnames = []
@@ -392,6 +443,7 @@ session.save_handler = files'''.format(path, sess_path, sess_path)
                 if search:
                     if filename.lower().find(search) == -1:
                         continue
+
                 i += 1
                 if n >= page.ROW:
                     break
@@ -489,7 +541,7 @@ session.save_handler = files'''.format(path, sess_path, sess_path)
             @return string
         '''
         
-        ps_path = '/www/server/panel/data/files_ps'
+        ps_path = public.get_panel_path() + '/data/files_ps'
         f_key1 = '/'.join((ps_path,public.md5(filename)))
         if os.path.exists(f_key1):
             return public.readFile(f_key1)
@@ -518,9 +570,37 @@ session.save_handler = files'''.format(path, sess_path, sess_path)
             '/www/server/cron':'计划任务脚本与日志目录',
             '/www/server/php':'PHP目录，所有PHP版本的解释器都在此目录下',
             '/www/server/tomcat':'Tomcat程序目录',
-            '/www/php_session':'PHP-SESSION隔离目录'
+            '/www/php_session':'PHP-SESSION隔离目录',
+            '/proc':'系统进程目录',
+            '/dev':'系统设备目录',
+            '/sys':'系统调用目录',
+            '/tmp':'系统临时文件目录',
+            '/var/log':'系统日志目录',
+            '/var/run':'系统运行日志目录',
+            '/var/spool':'系统队列目录',
+            '/var/lock':'系统锁定目录',
+            '/var/mail':'系统邮件目录',
+            '/mnt':'系统挂载目录',
+            '/media':'系统多媒体目录',
+            '/dev/shm':'系统共享内存目录',
+            '/lib':'系统动态库目录',
+            '/lib64':'系统动态库目录',
+            '/lib32':'系统动态库目录',
+            '/usr/lib':'系统动态库目录',
+            '/usr/lib64':'系统动态库目录',
+            '/usr/local/lib':'系统动态库目录',
+            '/usr/local/lib64':'系统动态库目录',
+            '/usr/local/libexec':'系统动态库目录',
+            '/usr/local/sbin':'系统脚本目录',
+            '/usr/local/bin':'系统脚本目录'
+
+            
         }
-        if filename in pss:  return pss[filename]
+        if filename in pss:  return "PS：" + pss[filename]
+        
+        if not self.recycle_list: self.recycle_list = public.get_recycle_bin_list()
+        if filename + '/' in self.recycle_list: return 'PS：回收站目录'
+        if filename in self.recycle_list: return 'PS：回收站目录'
         return ''
 
 
@@ -535,8 +615,8 @@ session.save_handler = files'''.format(path, sess_path, sess_path)
         '''
         filename = args.filename.strip()
         ps_type = int(args.ps_type)
-        ps_body = args.ps_body
-        ps_path = '/www/server/panel/data/files_ps'
+        ps_body = public.xssencode2(args.ps_body)
+        ps_path = public.get_panel_path() + '/data/files_ps'
         if not os.path.exists(ps_path):
             os.makedirs(ps_path,384)
         if ps_type == 1:
@@ -550,12 +630,20 @@ session.save_handler = files'''.format(path, sess_path, sess_path)
             public.writeFile(f_key,ps_body)
             public.WriteLog('文件管理','设置文件名[{}],备注为: {}'.format(f_name,ps_body))
         else:
-            if os.path.exists(f_key):os.remove(f_key)
-            public.WriteLog('文件管理','清除文件备注[{}]'.format(f_name))
+            if os.path.exists(f_key):
+                os.remove(f_key)
+                public.WriteLog('文件管理','清除文件备注[{}]'.format(f_name))
         return public.returnMsg(True,'设置成功')
 
         
 
+    def check_file_sort(self,sort):
+        """
+        @校验排序字段
+        """    
+        slist = ['name','size','mtime','accept','user']
+        if sort in slist: return sort
+        return 'name'
 
     def __list_dir(self, path, my_sort='name', reverse=False):
         '''
@@ -570,7 +658,8 @@ session.save_handler = files'''.format(path, sess_path, sess_path)
             return []
         py_v = sys.version_info[0]
         tmp_files = []
-    
+        
+        
         for f_name in os.listdir(path):
             try:
                 if py_v == 2:
@@ -618,7 +707,7 @@ session.save_handler = files'''.format(path, sess_path, sess_path)
 
     def SearchFiles(self, get):
         if not hasattr(get, 'path'):
-            get.path = '/www/wwwroot'
+            get.path = public.get_site_path()
         if sys.version_info[0] == 2:
             get.path = get.path.encode('utf-8')
         if not os.path.exists(get.path):
@@ -722,6 +811,9 @@ session.save_handler = files'''.format(path, sess_path, sess_path)
         if sys.version_info[0] == 2:
             get.path = get.path.encode('utf-8').strip()
         try:
+            fname = os.path.basename(get.path).strip()
+            fpath = os.path.dirname(get.path).strip()
+            get.path = os.path.join(fpath,fname)
             if get.path[-1] == '.':
                 return public.returnMsg(False, '文件结尾不建议使用 "."，因为可能存在安全隐患')
             if not self.CheckFileName(get.path):
@@ -753,6 +845,8 @@ session.save_handler = files'''.format(path, sess_path, sess_path)
         if not 'sfile' in get: return public.returnMsg(False,'参数错误')
         if not os.path.exists(get.sfile): return public.returnMsg(False,'指定文件不存在，无法创建软链!')
         if os.path.exists(get.dfile): return public.returnMsg(False,'指定软链文件名已存在，请使用其它文件名，或先删除!')
+        l_name = os.path.basename(get.dfile)
+        if re.match(r"^[\w\-\.]+$",l_name) == None: return public.returnMsg(False,'软链文件名不合法!')
         if get.dfile[0] != '/': return public.returnMsg(False,'指定软链文件名必需包含完整路径(全路径)')
         public.ExecShell("ln -sf {} {}".format(get.sfile,get.dfile))
         if not os.path.exists(get.dfile): return public.returnMsg(False,'软链文件创建失败!')
@@ -783,7 +877,7 @@ session.save_handler = files'''.format(path, sess_path, sess_path)
     def DeleteDir(self, get):
         if sys.version_info[0] == 2:
             get.path = get.path.encode('utf-8')
-        if get.path == '/www/Recycle_bin':
+        if os.path.basename(get.path) in ['Recycle_bin','.Recycle_bin']:
             return public.returnMsg(False, '不能直接操作回收站目录，请在右上角按【回收站】按钮打开')
         if not os.path.exists(get.path):
             return public.returnMsg(False, 'DIR_NOT_EXISTS')
@@ -804,12 +898,14 @@ session.save_handler = files'''.format(path, sess_path, sess_path)
             if os.path.exists('data/recycle_bin.pl') and session.get('debug') != 1:
                 if self.Mv_Recycle_bin(get):
                     self.site_path_safe(get)
+                    self.remove_file_ps(get)
                     return public.returnMsg(True, 'DIR_MOVE_RECYCLE_BIN')
 
             import shutil
             shutil.rmtree(get.path)
             self.site_path_safe(get)
             public.WriteLog('TYPE_FILE', 'DIR_DEL_SUCCESS', (get.path,))
+            self.remove_file_ps(get)
             return public.returnMsg(True, 'DIR_DEL_SUCCESS')
         except:
             return public.returnMsg(False, 'DIR_DEL_ERR')
@@ -836,21 +932,30 @@ session.save_handler = files'''.format(path, sess_path, sess_path)
             if os.path.exists('data/recycle_bin.pl') and session.get('debug') != 1:
                 if self.Mv_Recycle_bin(get):
                     self.site_path_safe(get)
+                    self.remove_file_ps(get)
                     return public.returnMsg(True, 'FILE_MOVE_RECYCLE_BIN')
             os.remove(get.path)
             self.site_path_safe(get)
             public.WriteLog('TYPE_FILE', 'FILE_DEL_SUCCESS', (get.path,))
+            self.remove_file_ps(get)
             return public.returnMsg(True, 'FILE_DEL_SUCCESS')
         except:
             return public.returnMsg(False, 'FILE_DEL_ERR')
 
+
+    def remove_file_ps(self,get):
+        '''
+            @name 删除文件或目录的备注信息
+        '''
+        get.filename = get.path
+        get.ps_body = ''
+        get.ps_type = '0'
+        self.set_file_ps(get)
+
     # 移动到回收站
     def Mv_Recycle_bin(self, get):
-        rPath = '/www/Recycle_bin/'
-        if not os.path.exists(rPath):
-            public.ExecShell('mkdir -p ' + rPath)
-        rFile = rPath + \
-            get.path.replace('/', '_bt_') + '_t_' + str(time.time())
+        rPath = public.get_recycle_bin_path(get.path)
+        rFile = os.path.join(rPath , get.path.replace('/', '_bt_') + '_t_' + str(time.time()))
         try:
             import shutil
             shutil.move(get.path, rFile)
@@ -863,11 +968,23 @@ session.save_handler = files'''.format(path, sess_path, sess_path)
 
     # 从回收站恢复
     def Re_Recycle_bin(self, get):
-        rPath = '/www/Recycle_bin/'
         if sys.version_info[0] == 2:
             get.path = get.path.encode('utf-8')
+        
         dFile = get.path.replace('_bt_', '/').split('_t_')[0]
-        get.path = rPath + get.path
+
+        # 检查所在回收站目录
+        recycle_bin_list  = public.get_recycle_bin_list()
+        _ok = False
+        for r_path in recycle_bin_list:
+            for r_file in os.listdir(r_path):
+                if get.path == r_file:
+                    _ok = True
+                    rPath = r_path
+                    get.path = os.path.join(rPath , get.path)
+                    break
+            if _ok: break  
+
         if dFile.find('BTDB_') != -1:
             import database
             return database.database().RecycleDB(get.path)
@@ -882,43 +999,47 @@ session.save_handler = files'''.format(path, sess_path, sess_path)
 
     # 获取回收站信息
     def Get_Recycle_bin(self, get):
-        rPath = '/www/Recycle_bin/'
-        if not os.path.exists(rPath):
-            public.ExecShell('mkdir -p ' + rPath)
         data = {}
         data['dirs'] = []
         data['files'] = []
         data['status'] = os.path.exists('data/recycle_bin.pl')
         data['status_db'] = os.path.exists('data/recycle_bin_db.pl')
-        for file in os.listdir(rPath):
-            file = self.xssencode(file)
-            try:
-                tmp = {}
-                fname = rPath + file
-                if sys.version_info[0] == 2:
-                    fname = fname.encode('utf-8')
-                else:
-                    fname.encode('utf-8')
-                tmp1 = file.split('_bt_')
-                tmp2 = tmp1[len(tmp1)-1].split('_t_')
-                tmp['rname'] = file
-                tmp['dname'] = file.replace('_bt_', '/').split('_t_')[0]
-                tmp['name'] = tmp2[0]
-                tmp['time'] = int(float(tmp2[1]))
-                if os.path.islink(fname):
-                    filePath = os.readlink(fname)
-                    if os.path.exists(filePath):
-                        tmp['size'] = os.path.getsize(filePath)
+        recycle_bin_list  = public.get_recycle_bin_list()
+        for rPath in recycle_bin_list:
+            if not os.path.exists(rPath): continue
+            for file in os.listdir(rPath):
+                file = self.xssencode(file)
+                try:
+                    tmp = {}
+                    fname = os.path.join(rPath , file)
+                    if sys.version_info[0] == 2:
+                        fname = fname.encode('utf-8')
                     else:
-                        tmp['size'] = 0
-                else:
-                    tmp['size'] = os.path.getsize(fname)
-                if os.path.isdir(fname):
-                    data['dirs'].append(tmp)
-                else:
-                    data['files'].append(tmp)
-            except:
-                continue
+                        fname.encode('utf-8')
+                    tmp1 = file.split('_bt_')
+                    tmp2 = tmp1[len(tmp1)-1].split('_t_')
+                    tmp['rname'] = file
+                    tmp['dname'] = file.replace('_bt_', '/').split('_t_')[0]
+                    if tmp['dname'].find('@') != -1:
+                        tmp['dname'] = "BTDB_" + tmp['dname'][5:].replace('@',"\\u").encode().decode("unicode_escape")
+                    tmp['name'] = tmp2[0]
+                    tmp['time'] = int(float(tmp2[1]))
+                    if os.path.islink(fname):
+                        filePath = os.readlink(fname)
+                        if os.path.exists(filePath):
+                            tmp['size'] = os.path.getsize(filePath)
+                        else:
+                            tmp['size'] = 0
+                    else:
+                        tmp['size'] = os.path.getsize(fname)
+                    if os.path.isdir(fname):
+                        if file[:5] == 'BTDB_':
+                            tmp['size'] =  public.get_path_size(fname)
+                        data['dirs'].append(tmp)
+                    else:
+                        data['files'].append(tmp)
+                except:
+                    continue
 
         data['dirs'] = sorted(data['dirs'],key = lambda x: x['time'],reverse=True)
         data['files'] = sorted(data['files'],key = lambda x: x['time'],reverse=True)
@@ -926,14 +1047,26 @@ session.save_handler = files'''.format(path, sess_path, sess_path)
 
     # 彻底删除
     def Del_Recycle_bin(self, get):
-        rPath = '/www/Recycle_bin/'
         if sys.version_info[0] == 2:
             get.path = get.path.encode('utf-8')
+        
         dFile = get.path.split('_t_')[0]
-        filename = rPath + get.path
+        # 检查所在回收站目录
+        recycle_bin_list  = public.get_recycle_bin_list()
+        _ok = False
+        for r_path in recycle_bin_list:
+            for r_file in os.listdir(r_path):
+                if get.path == r_file:
+                    _ok = True
+                    rPath = r_path
+                    filename = os.path.join(rPath , get.path)
+                    break
+            if _ok: break  
+
+        
         tfile = get.path.replace('_bt_', '/').split('_t_')[0]
-        if not os.path.exists(filename):
-            return public. returnMsg(True, 'FILE_DEL_RECYCLE_BIN', (tfile,))
+        if not _ok: return public.returnMsg(False, 'FILE_DEL_RECYCLE_BIN_ERR', (tfile,))
+    
         if dFile.find('BTDB_') != -1:
             import database
             return database.database().DeleteTo(filename)
@@ -957,30 +1090,33 @@ session.save_handler = files'''.format(path, sess_path, sess_path)
 
     # 清空回收站
     def Close_Recycle_bin(self, get):
-        rPath = '/www/Recycle_bin/'
-        public.ExecShell('chattr -R -i ' + rPath)
+        
         import database
         import shutil
-        rlist = os.listdir(rPath)
-        i = 0
-        l = len(rlist)
-        for name in rlist:
-            i += 1
-            path = rPath + name
-            public.writeSpeed(name, i, l)
-            if name.find('BTDB_') != -1:
-                database.database().DeleteTo(path)
-                continue
-            if os.path.isdir(path):
-                try:
-                    shutil.rmtree(path)
-                except:
-                    public.ExecShell('rm -rf ' + path)
-            else:
-                try:
-                    os.remove(path)
-                except:
-                    public.ExecShell('rm -f ' + path)
+
+        recycle_bin_list  = public.get_recycle_bin_list()
+        for rPath in recycle_bin_list:
+            public.ExecShell('chattr -R -i ' + rPath)
+            rlist = os.listdir(rPath)
+            i = 0
+            l = len(rlist)
+            for name in rlist:
+                i += 1
+                path = os.path.join(rPath , name)
+                public.writeSpeed(name, i, l)
+                if name.find('BTDB_') != -1:
+                    database.database().DeleteTo(path)
+                    continue
+                if os.path.isdir(path):
+                    try:
+                        shutil.rmtree(path)
+                    except:
+                        public.ExecShell('rm -rf ' + path)
+                else:
+                    try:
+                        os.remove(path)
+                    except:
+                        public.ExecShell('rm -f ' + path)
 
         public.writeSpeed(None, 0, 0)
         public.WriteLog('TYPE_FILE', 'FILE_CLOSE_RECYCLE_BIN')
@@ -1064,7 +1200,7 @@ session.save_handler = files'''.format(path, sess_path, sess_path)
             return public.returnMsg(False, '文件结尾不建议使用 "."，因为可能存在安全隐患')
         if not self.CheckFileName(get.dfile):
             return public.returnMsg(False, '文件名中不能包含特殊字符!')
-        if get.sfile == '/www/Recycle_bin':
+        if os.path.basename(get.sfile) == '.Recycle_bin':
             return public.returnMsg(False, '不能直接操作回收站目录，请在右上角按【回收站】按钮打开')
         if not os.path.exists(get.sfile):
             return public.returnMsg(False, 'FILE_NOT_EXISTS')
@@ -1130,6 +1266,14 @@ session.save_handler = files'''.format(path, sess_path, sess_path)
             get.path = get.path.encode('utf-8')
 
         get.path = self.xssdecode(get.path)
+
+        if get.path.find('/rewrite/null/') != -1:
+            webserver = public.get_webserver()
+            get.path = get.path.replace("/rewrite/null/", "/rewrite/{}/".format(webserver))
+        if get.path.find('/vhost/null/') != -1:
+            webserver = public.get_webserver()
+            get.path = get.path.replace("/vhost/null/", "/vhost/{}/".format(webserver))
+
         if not os.path.exists(get.path):
             if get.path.find('rewrite') == -1:
                 return public.returnMsg(False, 'FILE_NOT_EXISTS', (get.path,))
@@ -1137,6 +1281,8 @@ session.save_handler = files'''.format(path, sess_path, sess_path)
 
         if self.__get_ext(get.path) in ['gz', 'zip', 'rar', 'exe', 'db', 'pdf', 'doc', 'xls', 'docx', 'xlsx', 'ppt', 'pptx', '7z', 'bz2', 'png', 'gif', 'jpg', 'jpeg', 'bmp', 'icon', 'ico', 'pyc', 'class', 'so', 'pyd']:
             return public.returnMsg(False, '该文件格式不支持在线编辑!')
+
+
         if os.path.getsize(get.path) > 3145928:
             return public.returnMsg(False, u'不能在线编辑大于3MB的文件!')
         if os.path.isdir(get.path):
@@ -1178,6 +1324,7 @@ session.save_handler = files'''.format(path, sess_path, sess_path)
                 get.path = get.filename
             data['historys'] = self.get_history(get.path)
             data['auto_save'] = self.get_auto_save(get.path)
+            data['st_mtime'] = str(int(os.stat(get.path).st_mtime))
             return data
         except Exception as ex:
             return public.returnMsg(False, u'文件编码不被兼容，无法正确读取文件!' + str(ex))
@@ -1188,10 +1335,28 @@ session.save_handler = files'''.format(path, sess_path, sess_path)
             return public.returnMsg(False, 'path参数不能为空!')
         if sys.version_info[0] == 2:
             get.path = get.path.encode('utf-8')
+        
+        if get.path.find('/rewrite/null/') != -1:
+            webserver = public.get_webserver()
+            get.path = get.path.replace("/rewrite/null/", "/rewrite/{}/".format(webserver))
+        if get.path.find('/vhost/null/') != -1:
+            webserver = public.get_webserver()
+            get.path = get.path.replace("/vhost/null/", "/vhost/{}/".format(webserver))
+
         if not os.path.exists(get.path):
             if get.path.find('.htaccess') == -1:
                 return public.returnMsg(False, 'FILE_NOT_EXISTS')
 
+        nginx_conf_path = public.get_vhost_path() + '/nginx/'
+        if get.path.find(nginx_conf_path) != -1:
+            if get.data.find('#SSL-START') != -1 and get.data.find('#SSL-END') != -1:
+                if get.data.find('#error_page 404/404.html;') == -1:
+                    return public.returnMsg(False,'配置文件保存失败：<p style="color:red;">请勿修改SSL相关配置中注释的404规则</p><p>要修改404配置，找到以下配置位置：</p><pre>#ERROR-PAGE-START  错误页配置</pre>')
+
+        if 'st_mtime' in get:
+            st_mtime = str(int(os.stat(get.path).st_mtime))
+            if st_mtime != get['st_mtime']: return public.returnMsg(False,'保存失败，{}文件已发生改变，请刷新内容后重新修改.'.format(get.path))
+        
         his_path = '/www/backup/file_history/'
         if get.path.find(his_path) != -1:
             return public.returnMsg(False, '不能直接修改历史副本!')
@@ -1257,7 +1422,7 @@ session.save_handler = files'''.format(path, sess_path, sess_path)
 
     # 保存历史副本
     def save_history(self, filename):
-        if os.path.exists('/www/server/panel/data/not_file_history.pl'):
+        if os.path.exists(public.get_panel_path()+'/data/not_file_history.pl'):
             return True
         try:
             his_path = '/www/backup/file_history/'
@@ -1270,7 +1435,7 @@ session.save_handler = files'''.format(path, sess_path, sess_path)
             his_list = sorted(os.listdir(save_path), reverse=True)
             num = public.readFile('data/history_num.pl')
             if not num:
-                num = 10
+                num = 100
             else:
                 num = int(num)
             d_num = len(his_list)
@@ -1484,6 +1649,7 @@ session.save_handler = files'''.format(path, sess_path, sess_path)
             get.data = json.loads(get.data)
             l = len(get.data)
             i = 0
+            args = public.dict_obj()
             for key in get.data:
                 try:
                     if sys.version_info[0] == 2:
@@ -1512,12 +1678,18 @@ session.save_handler = files'''.format(path, sess_path, sess_path)
                             self.Mv_Recycle_bin(get)
                         else:
                             os.remove(filename)
+                    args.path = filename
+                    self.remove_file_ps(args)
                 except:
                     continue
                 public.writeSpeed(None, 0, 0)
             self.site_path_safe(get)
-            public.WriteLog('TYPE_FILE', 'FILE_ALL_DEL')
-            return public.returnMsg(True, 'FILE_ALL_DEL')
+            if not isRecyle:
+                public.WriteLog('TYPE_FILE', 'FILE_ALL_DEL')
+                return public.returnMsg(True, 'FILE_ALL_DEL')
+            else:
+                public.WriteLog('TYPE_FILE', '已批量将{}个文件或目录移动到回收站'.format(i))
+                return public.returnMsg(True, '已批量将{}个文件或目录移动到回收站'.format(i))
 
     # 批量粘贴
     def BatchPaste(self, get):
@@ -1838,7 +2010,7 @@ cd %s
 
     # 保存草稿
     def SaveTmpFile(self, get):
-        save_path = '/www/server/panel/temp'
+        save_path = public.get_panel_path() + '/temp'
         if not os.path.exists(save_path):
             os.makedirs(save_path)
         get.path = os.path.join(save_path, public.Md5(get.path) + '.tmp')
@@ -1848,7 +2020,7 @@ cd %s
     # 获取草稿
     def GetTmpFile(self, get):
         self.CleanOldTmpFile()
-        save_path = '/www/server/panel/temp'
+        save_path = public.get_panel_path() + '/temp'
         if not os.path.exists(save_path):
             os.makedirs(save_path)
         src_path = get.path
@@ -1865,7 +2037,7 @@ cd %s
     def CleanOldTmpFile(self):
         if 'clean_tmp_file' in session:
             return True
-        save_path = '/www/server/panel/temp'
+        save_path = public.get_panel_path() + '/temp'
         max_time = 86400 * 30
         now_time = time.time()
         for tmpFile in os.listdir(save_path):
@@ -1888,8 +2060,8 @@ cd %s
 
     # 安装rar组件
     def install_rar(self, get):
-        unrar_file = '/www/server/rar/unrar'
-        rar_file = '/www/server/rar/rar'
+        unrar_file = public.get_setup_path() + '/rar/unrar'
+        rar_file = public.get_setup_path() + '/rar/rar'
         bin_unrar = '/usr/local/bin/unrar'
         bin_rar = '/usr/local/bin/rar'
         if os.path.exists(unrar_file) and os.path.exists(bin_unrar):
@@ -1908,8 +2080,8 @@ cd %s
         tmp_file = '/tmp/bt_rar.tar.gz'
         public.ExecShell('wget -O ' + tmp_file + ' ' + download_url)
         if os.path.exists(unrar_file):
-            public.ExecShell("rm -rf /www/server/rar")
-        public.ExecShell("tar xvf " + tmp_file + ' -C /www/server/')
+            public.ExecShell("rm -rf {}".format(rar_file))
+        public.ExecShell("tar xvf " + tmp_file + ' -C {}'.format(public.get_setup_path()))
         if os.path.exists(tmp_file):
             os.remove(tmp_file)
         if not os.path.exists(unrar_file):
@@ -2132,7 +2304,7 @@ cd %s
 
     #取PHP-CLI执行命令
     def __get_php_bin(self,php_version=None):
-        php_vs = ["80","74","73","72","71","70","56","55","54","53"]
+        php_vs = public.get_php_versions(True)
         if php_version:
             if php_version != 'auto':
                 if not php_version in php_vs: return ''
@@ -2153,15 +2325,13 @@ cd %s
         if not php_v: return ''
         #处理PHP-CLI-INI配置文件
         php_ini = '/www/server/panel/tmp/composer_php_cli_'+php_v+'.ini'
-        if not os.path.exists(php_ini):
-            #如果不存在，则从PHP安装目录下复制一份
-            src_php_ini = php_path + php_v + '/etc/php.ini'
-            import shutil
-            shutil.copy(src_php_ini,php_ini)
-            #解除所有禁用函数
-            php_ini_body = public.readFile(php_ini)
-            php_ini_body = re.sub(r"disable_functions\s*=.*","disable_functions = ",php_ini_body)
-            public.writeFile(php_ini,php_ini_body)
+        src_php_ini = php_path + php_v + '/etc/php.ini'
+        import shutil
+        shutil.copy(src_php_ini,php_ini)
+        #解除所有禁用函数
+        php_ini_body = public.readFile(php_ini)
+        php_ini_body = re.sub(r"disable_functions\s*=.*","disable_functions = ",php_ini_body)
+        public.writeFile(php_ini,php_ini_body)
         return php_path + php_v + '/bin/php -c ' + php_ini
 
 
@@ -2348,6 +2518,27 @@ cd %s
         except:
             return uid
 
+    # 取lsattr
+    def get_lsattr(self,filename):
+        if os.path.isfile(filename):
+            return public.ExecShell('lsattr {}'.format(filename))[0].split(' ')[0]
+        else:
+            s_name = os.path.basename(filename)
+            s_path = os.path.dirname(filename)
+
+            try:
+                res = public.ExecShell('lsattr {}'.format(s_path))[0].strip()
+                for s in res.split('\n'):
+                    if not s: continue
+                    lsattr_info = s.split()
+                    if not lsattr_info: continue
+                    if filename == lsattr_info[1]:
+                        return lsattr_info[0]
+            except: 
+                raise public.PanelError(lsattr_info)
+                
+        return '--------------e----'
+
 
     # 取指定文件属性
     def get_file_attribute(self,args):
@@ -2373,7 +2564,7 @@ cd %s
         attribute['mode'] = str(oct(f_stat.st_mode)[-3:])         # 文件权限号
         attribute['md5'] = '大于100M或目录不计算'                        # 文件MD5
         attribute['sha1'] = '大于100M或目录不计算'                       # 文件sha1
-        attribute['lsattr'] = public.ExecShell('lsattr {}'.format(filename))[0].split(' ')[0]
+        attribute['lsattr'] = self.get_lsattr(filename)
         attribute['is_dir'] = os.path.isdir(filename)   # 是否为目录
         attribute['is_link'] = os.path.islink(filename)  # 是否为链接文件
         if attribute['is_link']:
@@ -2390,7 +2581,121 @@ cd %s
             attribute['history'] = self.get_history_info(filename) # 历史文件
         return attribute
 
+    def files_search(self,args):
+        import panelSearch
+        adad=panelSearch.panelSearch()
+        return adad.get_search(args)
 
+
+    def files_replace(self,args):
+        import panelSearch
+        adad=panelSearch.panelSearch()
+        return adad.get_replace(args)
+
+    def get_replace_logs(self,args):
+        import panelSearch
+        adad=panelSearch.panelSearch()
+        return adad.get_replace_logs(args)
+
+    def get_path_images(self,path):
+        '''
+            @name 获取目录的图片列表
+            @param path 目录路径
+            @return 图片列表
+        '''
+        image_list = []
+        for fname in os.listdir(path):
+            if fname.split('.')[-1] in ['png','jpeg','gif','jpg','bmp','ico']:
+                image_list.append(fname)
+        return ','.join(image_list)
+
+    def get_images_resize(self,args):
+        '''
+            @name 获取指定图片的缩略图
+            @author hwliang<2022-03-02>
+            @param args<dict_obj>{
+                "path": "", 图片路径
+                "files": xx.png,aaa.jpg, 文件名称(不包含目录路径),如果files=*，则返回该目录下的所有图片
+                "width": 50, 宽
+                "heigth:50, 高
+                "return_type": "base64" // base64,file
+            }
+            @return base64编码的图片 or file
+        '''
+        from PIL import Image
+        from base64 import b64encode
+        from io import BytesIO
+        if args.files == '*':
+            args.files = self.get_path_images(args.path)
+        
+        file_list = args.files.split(',')
+
+        width = int(args.width)
+        height = int(args.height)
+
+        data = {}
+        for fname in file_list:
+            try:
+                filename = os.path.join(args.path,fname)
+                if not os.path.exists(filename): continue
+                im  = Image.open(filename)
+                im.thumbnail((width,height))
+                out = BytesIO()
+                im.save(out, im.format)
+                out.seek(0)
+                image_type = im.format.lower()
+                mimetype = 'image/{}'.format(image_type)
+                if args.return_type == 'base64':
+                    b64_data = "data:{};base64,".format(mimetype) + b64encode(out.read()).decode('utf-8')
+                    data[fname] = b64_data
+                    out.close()
+                else:
+                    from flask import send_file
+                    return send_file(out, mimetype=mimetype, cache_timeout=0)
+            except:
+                data[fname] = ''
+        return public.return_data(True,data)
+
+    def set_rsync_data(self,data):
+        '''
+            @name 写入rsync配置数据
+            @author cjx
+            @param data<dict> 配置数据
+            @return bool
+        '''
+        public.writeFile('{}/data/file_rsync.json'.format(public.get_panel_path()),json.dumps(data))
+        return True
+
+    def get_rsync_data(self):
+        '''
+            @name 获取文件同步配置
+            @author cjx
+            @return dict
+        '''
+        data = {}
+        path = '{}/data/file_rsync.json'.format(public.get_panel_path())
+        try:
+            if os.path.exists(path):
+                data = json.loads(public.readFile(path))
+        except :
+            data = {}       
+        return data
+
+    def add_files_rsync(self,get):
+        '''
+            @name 添加数据同步标记
+            @author cjx
+        '''
+        path = get.path
+        s_type = get.s_type
+
+        data = self.get_rsync_data()   
+        if not path in data: data[path] = {}
+
+        data[path][s_type] = 1
+
+        self.set_rsync_data(data)
+        return public.returnMsg(True,'添加成功!')
 
 
 

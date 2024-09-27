@@ -6,6 +6,7 @@
 # +-------------------------------------------------------------------
 # | Author: hwliang <hwl@bt.cn>
 # +-------------------------------------------------------------------
+import base64
 import public,re,sys,os,nginx,apache,json,time,ols
 try:
     import pyotp
@@ -61,7 +62,7 @@ class config:
         emailformat = re.compile(r'[a-zA-Z0-9.-_+%]+@[a-zA-Z0-9]+\.[a-zA-Z0-9]+')
         if not emailformat.search(get.email): return public.returnMsg(False, '请输入正确的邮箱')
         # 测试发送邮件
-        if get.email.strip() in self.__mail_list: return public.returnMsg(True, '邮箱已经存在')
+        if get.email.strip() in self.__mail_list: return public.returnMsg(False, '邮箱已经存在')
         self.__mail_list.append(get.email.strip())
         public.writeFile(self.__mail_list_data, json.dumps(self.__mail_list))
         return public.returnMsg(True, '添加成功')
@@ -179,7 +180,8 @@ class config:
         userInfo = public.M('users').where("id=?",(1,)).field('username,password').find()
         token = public.Md5(userInfo['username'] + '/' + userInfo['password'])
         public.writeFile('/www/server/panel/data/login_token.pl',token)
-
+        skey = 'login_token'
+        cache.set(skey,token)
         sess_path = 'data/sess_files'
         if not os.path.exists(sess_path):
             os.makedirs(sess_path,384)
@@ -212,17 +214,174 @@ class config:
             except:
                 pass
 
+    def get_password_safe_file(self):
+        '''
+            @name 获取密码复杂度配置文件
+            @auther hwliang<2021-10-18>
+            @return string
+        '''
+        return public.get_panel_path() + '/data/check_password_safe.pl'
+
+    def check_password_safe(self,password):
+        '''
+            @name 密码复杂度验证
+            @auther hwliang<2021-10-18>
+            @param password(string) 密码
+            @return bool
+        '''
+        # 是否检测密码复杂度
+        is_check_file = self.get_password_safe_file()
+        if not os.path.exists(is_check_file): return True
+
+        # 密码长度验证
+        if len(password) < 8: return False
+
+        num = 0
+        # 密码是否包含数字
+        if re.search(r'[0-9]+',password): num += 1
+        # 密码是否包含小写字母
+        if re.search(r'[a-z]+',password): num += 1
+        # 密码是否包含大写字母
+        if re.search(r'[A-Z]+',password): num += 1
+        # 密码是否包含特殊字符
+        if re.search(r'[^\w\s]+',password): num += 1
+        # 密码是否包含以上任意3种组合
+        if num < 3: return False
+        return True
+
+    def set_password_safe(self,get):
+        '''
+            @name 设置密码复杂度
+            @auther hwliang<2021-10-18>
+            @param get(string) 参数
+            @return dict
+        '''
+        is_check_file = self.get_password_safe_file()
+        if os.path.exists(is_check_file):
+            os.remove(is_check_file)
+            public.WriteLog('TYPE_PANEL','关闭密码复杂度验证')
+            return public.returnMsg(True,'已关闭密码复杂度验证')
+        else:
+            public.writeFile(is_check_file,'True')
+            public.WriteLog('TYPE_PANEL','开启密码复杂度验证')
+            return public.returnMsg(True,'已开启密码复杂度验证')
+
+    def get_password_safe(self,get):
+        '''
+            @name 获取密码复杂度
+            @auther hwliang<2021-10-18>
+            @param get(string) 参数
+            @return bool
+        '''
+        is_check_file = self.get_password_safe_file()
+        return os.path.exists(is_check_file)
+
+
+    def get_password_expire_file(self):
+        '''
+            @name 获取密码过期配置文件
+            @auther hwliang<2021-10-18>
+            @return string
+        '''
+        return public.get_panel_path() + '/data/password_expire.pl'
+
+
+    def set_password_expire(self,get):
+        '''
+            @name 设置密码过期时间
+            @auther hwliang<2021-10-18>
+            @param get<dict_obj>{
+                expire: int<密码过期时间> 单位:天,
+            }
+            @return dict
+        '''
+        expire = int(get.expire)
+        expire_file = self.get_password_expire_file()
+        if expire <= 0:
+            if os.path.exists(expire_file):
+                os.remove(expire_file)
+            public.WriteLog('TYPE_PANEL','关闭密码过期验证')
+            return public.returnMsg(True,'已关闭密码过期验证')
+        min_expire = 10
+        max_expire = 365 * 5
+        if expire < min_expire: return public.returnMsg(False,'密码过期时间不能小于{}天'.format(min_expire))
+        if expire > max_expire: return public.returnMsg(False,'密码过期时间不能大于{}天'.format(max_expire))
+
+        public.writeFile(self.get_password_expire_file(),str(expire))
+        
+        if expire > 0:
+            expire_time_file = public.get_panel_path() + '/data/password_expire_time.pl'
+            public.writeFile(expire_time_file,str(int(time.time()) + (expire * 86400)))
+            
+        public.WriteLog('TYPE_PANEL','设置密码过期时间为：[{}]天'.format(expire))
+        return public.returnMsg(True,'已设置密码过期时间为：[{}]天'.format(expire))
+
+    def get_password_config(self,get=None):
+        '''
+            @name 获取密码配置
+            @auther hwliang<2021-10-18>
+            @param get<dict_obj> 参数
+            @return dict{expire:int,expire_time:int,password_safe:bool}
+        '''
+        expire_file = self.get_password_expire_file()
+        expire = 0
+        expire_time=0
+        if os.path.exists(expire_file): 
+            expire = public.readFile(expire_file)
+            try:
+                expire = int(expire)
+            except:
+                expire = 0
+
+            # 检查密码过期时间文件是否存在
+            expire_time_file = public.get_panel_path() + '/data/password_expire_time.pl'
+            if not os.path.exists(expire_time_file) and expire > 0:
+                public.writeFile(expire_time_file,str(int(time.time()) + (expire * 86400)))
+            
+            expire_time = public.readFile(expire_time_file)
+            if expire_time: 
+                expire_time = int(expire_time)
+            else:
+                expire_time = 0
+            
+        data = {}
+        data['expire'] = expire
+        data['expire_time'] = expire_time
+        data['password_safe'] = self.get_password_safe(get)
+        data['ps'] = '当前未开启密码过期配置，为了您的面板安全，请考虑开启!'
+        if data['expire_time']:
+            data['expire_day'] = int((expire_time - time.time()) / 86400)
+            if data['expire_day'] < 10:
+                if data['expire_day'] <= 0:
+                    data['ps'] = '您的密码已经过期，为防止下次无法登录，请立即修改密码!'
+                else:
+                    data['ps'] = "您的面板密码还有 <span style='color:red;'>{}</span> 天就过期了，为了不影响您正常登录，请尽快修改密码!".format(data['expire_day'])
+            else:
+                data['ps'] = "您的面板密码离过期时间还有 <span style='color:green;'>{}</span> 天!".format(data['expire_day'])
+        return data
 
     
     def setPassword(self,get):
+        get.password1 = public.url_decode(get.password1)
+        get.password2 = public.url_decode(get.password2)
         if get.password1 != get.password2: return public.returnMsg(False,'USER_PASSWORD_CHECK')
         if len(get.password1) < 5: return public.returnMsg(False,'USER_PASSWORD_LEN')
+        if not self.check_password_safe(get.password1): return public.returnMsg(False,'密码复杂度验证失败，要求：长度大于8位，数字、大写字母、小写字母、特殊字符最少3项组合')
         public.M('users').where("username=?",(session['username'],)).setField('password',public.password_salt(public.md5(get.password1.strip()),username=session['username']))
         public.WriteLog('TYPE_PANEL','USER_PASSWORD_SUCCESS',(session['username'],))
         self.reload_session()
+
+        # 密码过期时间
+        expire_time_file = public.get_panel_path() + '/data/password_expire_time.pl'
+        if os.path.exists(expire_time_file): os.remove(expire_time_file)
+        self.get_password_config(None)
+        if session.get('password_expire',False):
+            session['password_expire'] = False
         return public.returnMsg(True,'USER_PASSWORD_SUCCESS')
     
     def setUsername(self,get):
+        get.username1 = public.url_decode(get.username1)
+        get.username2 = public.url_decode(get.username2)
         if get.username1 != get.username2: return public.returnMsg(False,'USER_USERNAME_CHECK')
         if len(get.username1) < 3: return public.returnMsg(False,'USER_USERNAME_LEN')
         public.M('users').where("username=?",(session['username'],)).setField('username',get.username1.strip())
@@ -238,6 +397,8 @@ class config:
 
     # 创建新用户
     def create_user(self,args):
+        args.username = public.url_decode(args.username)
+        args.password = public.url_decode(args.password)
         if session['uid'] != 1: return public.returnMsg(False,'没有权限!')
         if len(args.username) < 2: return public.returnMsg(False,'用户名不能少于2位')
         if len(args.password) < 8: return public.returnMsg(False,'密码不能少于8位')
@@ -271,11 +432,13 @@ class config:
         username = public.M('users').where('id=?',(args.id,)).getField('username')
         pdata = {}
         if 'username' in args:
+            args.username = public.url_decode(args.username)
             if len(args.username) < 2: return public.returnMsg(False,'用户名不能少于2位')
             pdata['username'] = args.username.strip()
 
         if 'password' in args:
             if args.password:
+                args.password = public.url_decode(args.password)
                 if len(args.password) < 8: return public.returnMsg(False,'密码不能少于8位')
                 pdata['password'] = public.password_salt(public.md5(args.password.strip()),username=username)
 
@@ -286,6 +449,9 @@ class config:
     
     def setPanel(self,get):
         if not public.IsRestart(): return public.returnMsg(False,'EXEC_ERR_TASK')
+        if 'limitip' in get:
+            if get.limitip.find('/') != -1:
+                return public.returnMsg(False,'授权IP格式不正确,不支持子网段写法')
         isReWeb = False
         sess_out_path = 'data/session_timeout.pl'
         if 'session_timeout' in get:
@@ -294,6 +460,7 @@ class config:
             if not s_time_tmp: s_time_tmp = '0'
             if int(s_time_tmp) != session_timeout:
                 if session_timeout < 300: return public.returnMsg(False,'超时时间不能小于300秒')
+                if session_timeout > 86400: return public.returnMsg(False,'超时时间不能大于86400秒')
                 public.writeFile(sess_out_path,str(session_timeout))
                 isReWeb = True
 
@@ -328,8 +495,8 @@ class config:
             isReWeb = True
         
         if get.webname != session['title']: 
-            session['title'] = get.webname
-            public.SetConfigValue('title',get.webname)
+            session['title'] = public.xssencode2(get.webname)
+            public.SetConfigValue('title',public.xssencode2(get.webname))
 
         limitip = public.readFile('data/limitip.conf')
         if get.limitip != limitip: 
@@ -340,7 +507,10 @@ class config:
         public.writeFile('data/domain.conf',get.domain.strip())
         public.writeFile('data/iplist.txt',get.address)
         
-        
+        import files
+        fs = files.files()
+        if not fs.CheckDir(get.backup_path): return public.returnMsg(False,'不能使用系统关键目录作为默认备份目录')
+        if not fs.CheckDir(get.sites_path): return public.returnMsg(False,'不能使用系统关键目录作为默认建站目录')
         public.M('config').where("id=?",('1',)).save('backup_path,sites_path',(get.backup_path,get.sites_path))
         session['config']['backup_path'] = os.path.join('/',get.backup_path)
         session['config']['sites_path'] = os.path.join('/',get.sites_path)
@@ -367,19 +537,10 @@ class config:
 
     def set_admin_path(self,get):
         get.admin_path = get.admin_path.strip()
-        if get.admin_path == '': get.admin_path = '/'
-        if get.admin_path != '/':
-            if len(get.admin_path) < 6: return public.returnMsg(False,'安全入口地址长度不能小于6位!')
-            if get.admin_path in admin_path_checks: return public.returnMsg(False,'该入口已被面板占用,请使用其它入口!')
-            if not public.path_safe_check(get.admin_path) or get.admin_path[-1] == '.':  return public.returnMsg(False,'入口地址格式不正确,示例: /my_panel')
-            if get.admin_path[0] != '/': return public.returnMsg(False,'入口地址格式不正确,示例: /my_panel')
-        else:
-            get.domain = public.readFile('data/domain.conf')
-            if not get.domain: get.domain = ''
-            get.limitip = public.readFile('data/limitip.conf')
-            if not get.limitip: get.limitip = ''
-            if not get.domain.strip() and not get.limitip.strip() and not os.path.exists('config/basic_auth.json'): return public.returnMsg(False,'警告，关闭安全入口等于直接暴露你的后台地址在外网，十分危险，至少开启以下一种安全方式才能关闭：<a style="color:red;"><br>1、绑定访问域名<br>2、绑定授权IP <br> 3.开启BasicAuth认证</a>')
-
+        if len(get.admin_path) < 6: return public.returnMsg(False,'安全入口地址长度不能小于6位!')
+        if get.admin_path in admin_path_checks: return public.returnMsg(False,'该入口已被面板占用,请使用其它入口!')
+        if not public.path_safe_check(get.admin_path) or get.admin_path[-1] == '.':  return public.returnMsg(False,'入口地址格式不正确,示例: /my_panel')
+        if get.admin_path[0] != '/': return public.returnMsg(False,'入口地址格式不正确,示例: /my_panel')
         admin_path_file = 'data/admin_path.pl'
         admin_path = '/'
         if os.path.exists(admin_path_file): admin_path = public.readFile(admin_path_file).strip()
@@ -435,9 +596,9 @@ class config:
             if not os.path.exists(p):
                 continue
             conf = public.readFile(p)
-            rep = r"\nupload_max_filesize\s*=\s*[0-9]+M"
+            rep = r"\nupload_max_filesize\s*=\s*[0-9]+M?m?"
             conf = re.sub(rep,r'\nupload_max_filesize = '+max+'M',conf)
-            rep = r"\npost_max_size\s*=\s*[0-9]+M"
+            rep = r"\npost_max_size\s*=\s*[0-9]+M?m?"
             conf = re.sub(rep,r'\npost_max_size = '+max+'M',conf)
             public.writeFile(p,conf)
 
@@ -445,7 +606,7 @@ class config:
             #设置Nginx
             path = public.GetConfigValue('setup_path')+'/nginx/conf/nginx.conf'
             conf = public.readFile(path)
-            rep = r"client_max_body_size\s+([0-9]+)m"
+            rep = r"client_max_body_size\s+([0-9]+)m?M?"
             tmp = re.search(rep,conf).groups()
             if int(tmp[0]) < int(max):
                 conf = re.sub(rep,'client_max_body_size '+max+'m',conf)
@@ -737,7 +898,6 @@ class config:
     #设置面板SSL
     def SetPanelSSL(self,get):
         if hasattr(get,"email"):
-            #rep_mail = "^[a-zA-Z0-9_-]+@[a-zA-Z0-9_-]+(\.[a-zA-Z0-9_-]+)+$"
             rep_mail = r"[\w!#$%&'*+/=?^_`{|}~-]+(?:\.[\w!#$%&'*+/=?^_`{|}~-]+)*@(?:[\w](?:[\w-]*[\w])?\.)+[\w](?:[\w-]*[\w])?"
             if not re.search(rep_mail,get.email):
                 return public.returnMsg(False,'邮箱格式不合法')
@@ -747,21 +907,51 @@ class config:
             return sps
         else:
             sslConf = '/www/server/panel/data/ssl.pl'
-            if os.path.exists(sslConf):
+            if os.path.exists(sslConf) and not 'cert_type' in get:
                 public.ExecShell('rm -f ' + sslConf)
+                g.rm_ssl = True
                 return public.returnMsg(True,'PANEL_SSL_CLOSE')
             else:
-                public.ExecShell('pip install cffi')
-                public.ExecShell('pip install cryptography')
-                public.ExecShell('pip install pyOpenSSL')
-                try:
-                    if not self.CreateSSL(): return public.returnMsg(False,'PANEL_SSL_ERR')
+                if get.cert_type in [0,'0']:
+                    result = self.SavePanelSSL(get)
+                    if not result['status']: return result
                     public.writeFile(sslConf,'True')
-                except:
-                    return public.returnMsg(False,'PANEL_SSL_ERR')
+                    public.writeFile('data/reload.pl','True')
+                else:
+                    try:
+                        if not self.CreateSSL(): return public.returnMsg(False,'PANEL_SSL_ERR')
+                        public.writeFile(sslConf,'True')
+                    except:
+                        return public.returnMsg(False,'PANEL_SSL_ERR')
                 return public.returnMsg(True,'PANEL_SSL_OPEN')
     #自签证书
     def CreateSSL(self):
+        userInfo = public.get_user_info()
+        if userInfo:
+            domains = []
+            req_host = public.GetHost()
+            server_ip = public.get_ip()
+            domains.append(req_host)
+            if server_ip != req_host and not server_ip in ['127.0.0.1','::1','localhost']:
+                domains.append(server_ip)
+            pdata = {
+                "action":"get_domain_cert",
+                "company":"宝塔面板",
+                "domain":','.join(domains),
+                "uid":userInfo['uid'],
+                "access_key":userInfo['access_key'],
+                "panel":1
+            }
+            cert_api = 'https://api.bt.cn/bt_cert'
+            result = json.loads(public.httpPost(cert_api,{'data': json.dumps(pdata)}))
+            if 'status' in result:
+                if result['status']:
+                    public.writeFile('ssl/certificate.pem',result['cert'])
+                    public.writeFile('ssl/privateKey.pem',result['key'])
+                    public.writeFile('ssl/baota_root.pfx',base64.b64decode(result['pfx']),'wb+')
+                    public.writeFile('ssl/root_password.pl',result['password'])
+                    return True
+
         if os.path.exists('ssl/input.pl'): return True
         import OpenSSL
         key = OpenSSL.crypto.PKey()
@@ -776,6 +966,7 @@ class config:
         cert.sign( key, 'md5' )
         cert_ca = OpenSSL.crypto.dump_certificate(OpenSSL.crypto.FILETYPE_PEM, cert)
         private_key = OpenSSL.crypto.dump_privatekey(OpenSSL.crypto.FILETYPE_PEM, key)
+
         if len(cert_ca) > 100 and len(private_key) > 100:
             public.writeFile('ssl/certificate.pem',cert_ca,'wb+')
             public.writeFile('ssl/privateKey.pem',private_key,'wb+')
@@ -866,6 +1057,8 @@ class config:
             if os.path.exists('/etc/redhat-release'):
                 phpini_file = '/usr/local/lsws/lsphp' + get.version + '/etc/php.ini'
         phpini = public.readFile(phpini_file)
+        if not phpini:
+            return public.returnMsg(False,"读取PHP配置文件出错，请尝试重新安装这个PHP！")
         result = []
         for g in gets:
             rep = g['name'] + r'\s*=\s*([0-9A-Za-z_&/ ~]+)(\s*;?|\r?\n)'
@@ -1108,8 +1301,30 @@ class config:
     #获取面板证书
     def GetPanelSSL(self,get):
         cert = {}
-        cert['privateKey'] = public.readFile('ssl/privateKey.pem')
-        cert['certPem'] = public.readFile('ssl/certificate.pem')
+        key_file = 'ssl/privateKey.pem'
+        cert_file = 'ssl/certificate.pem'
+        if not os.path.exists(key_file):
+            self.CreateSSL()
+        cert['privateKey'] = public.readFile(key_file)
+        cert['certPem'] = public.readFile(cert_file)
+        cert['download_root'] = False
+        cert['info'] = {}
+        if not cert['privateKey']:
+            cert['privateKey'] = ''
+            cert['certPem'] = ''
+        else:
+            cert['info'] = public.get_cert_data(cert_file)
+            if not cert['info']:
+                self.CreateSSL()
+                cert['info'] = public.get_cert_data(cert_file)
+            if cert['info']:
+                if cert['info']['issuer'] == '宝塔面板':
+                    if os.path.exists('ssl/baota_root.pfx'):
+                        cert['download_root'] = True
+                        cert['root_password'] = public.readFile('ssl/root_password.pl')
+                
+
+        
         cert['rep'] = os.path.exists('ssl/input.pl')
         return cert
     
@@ -1118,6 +1333,9 @@ class config:
         keyPath = 'ssl/privateKey.pem'
         certPath = 'ssl/certificate.pem'
         checkCert = '/tmp/cert.pl'
+        ssl_pl = 'data/ssl.pl'
+        if not 'certPem' in get: return public.returnMsg(False,'缺少certPem参数!')
+        if not 'privateKey' in get: return public.returnMsg(False,'缺少privateKey参数!')
         public.writeFile(checkCert,get.certPem)
         if get.privateKey:
             public.writeFile(keyPath,get.privateKey)
@@ -1125,19 +1343,24 @@ class config:
             public.writeFile(certPath,get.certPem)
         if not public.CheckCert(checkCert): return public.returnMsg(False,'证书错误,请检查!')
         public.writeFile('ssl/input.pl','True')
+        if os.path.exists(ssl_pl): public.writeFile('data/reload.pl','True')
         return public.returnMsg(True,'证书已保存!')
 
 
     #获取配置
     def get_config(self,get):
+        data = {}
         if 'config' in session:
             session['config']['distribution'] = public.get_linux_distribution()
             session['webserver'] = public.get_webserver()
             session['config']['webserver'] = session['webserver']
-            return session['config']
-        data = public.M('config').where("id=?",('1',)).field('webserver,sites_path,backup_path,status,mysql_root').find()
+            data = session['config']
+        if not data:
+            data = public.M('config').where("id=?",('1',)).field('webserver,sites_path,backup_path,status,mysql_root').find()
         data['webserver'] = public.get_webserver()
         data['distribution'] = public.get_linux_distribution()
+        data['request_iptype'] = self.get_request_iptype()
+        data['request_type'] = self.get_request_type()
         return data
     
 
@@ -1273,6 +1496,8 @@ class config:
         public.ExecShell("ln -sf %s %s" % (php_fpm_src,php_fpm))
         public.ExecShell("ln -sf %s %s" % (php_pecl_src,php_pecl))
         public.ExecShell("ln -sf %s %s" % (php_pear_src,php_pear))
+        import jobs
+        jobs.set_php_cli_env()
         if is_chattr != -1:  public.ExecShell('chattr +i /usr/bin')
         public.WriteLog('面板设置','设置PHP-CLI版本为: %s' % get.php_version)
         return public.returnMsg(True,'设置成功!')
@@ -1827,3 +2052,259 @@ class config:
         path = '/www/server/panel/data/send_login_white.json'
         public.WriteFile(path, json.dumps([]))
         return public.returnMsg(True, "清空成功")
+        
+        
+    def set_ssl_verify(self,get):
+        """
+        设置双向认证
+        """
+        sslConf = 'data/ssl_verify_data.pl'
+        status = int(get.status)
+        if status:
+            if not os.path.exists('data/ssl.pl'): return public.returnMsg(False,'需要先开启面板SSL功能!')                
+            public.writeFile(sslConf,'True')
+        else:
+            if os.path.exists(sslConf): os.remove(sslConf)
+        if 'crl' in get and 'ca' in get:
+            crl = 'ssl/crl.pem'
+            ca = 'ssl/ca.pem'
+            if get.crl:
+                public.writeFile(crl,get.crl.strip())
+            if get.ca:
+                public.writeFile(ca,get.ca.strip())
+            return public.returnMsg(True,'面板双向认证证书已保存!')
+        else:
+            msg = '开启'
+            if not status:msg = '关闭'
+            return public.returnMsg(True,'面板双向认证{}成功!'.format(msg))
+
+    def get_ssl_verify(self, get):
+        """
+        获取双向认证
+        """
+        result = {'status': False, 'ca': '', 'crl': ''}
+        sslConf = 'data/ssl_verify_data.pl'
+        if os.path.exists(sslConf): result['status'] = True
+
+        ca = 'ssl/ca.pem'
+        crl = 'ssl/crl.pem'
+        if os.path.exists(crl):
+            result['crl'] = public.readFile(crl)
+        if os.path.exists(crl):
+            result['ca'] = public.readFile(ca)
+        return result
+
+
+    def set_not_auth_status(self,get):
+        '''
+            @name 设置未认证时的响应状态
+            @author hwliang<2021-12-16>
+            @param status_code<int> 状态码
+            @return dict
+        '''
+        if not 'status_code' in get:
+            return public.returnMsg(False,'参数错误!')
+        
+        if re.match("^\d+$", get.status_code):
+            status_code = int(get.status_code)
+            if status_code != 0:
+                if status_code < 100 or status_code > 999:
+                    return public.returnMsg(False,'状态码范围错误!')
+        else:
+            return public.returnMsg(False,'状态码范围错误!')
+        
+        public.save_config('abort',get.status_code)
+        public.WriteLog('面板设置','将未授权响应状态码设置为:{}'.format(get.status_code))
+        return public.returnMsg(True,'设置成功!')
+
+    def get_not_auth_status(self):
+        '''
+            @name 获取未认证时的响应状态
+            @author hwliang<2021-12-16>
+            @return int
+        '''
+        try:
+            status_code = int(public.read_config('abort'))
+            return status_code
+        except:
+            return 0
+
+    def get_request_iptype(self,get = None):
+        '''
+            @name 获取云端请求线路
+            @author hwliang<2022-02-09>
+            @return auto/ipv4/ipv6        
+        '''
+
+        v4_file = '{}/data/v4.pl'.format(public.get_panel_path())
+        if not os.path.exists(v4_file): return 'auto'
+        iptype = public.readFile(v4_file).strip()
+        if not iptype: return 'auto'
+        if iptype == '-4': return 'ipv4'
+        return 'ipv6'
+
+    
+    def set_request_iptype(self,get):
+        '''
+            @name 设置云端请求线路
+            @author hwliang<2022-02-09>
+            @param iptype<str> auto/ipv4/ipv6
+            @return dict
+        '''
+        v4_file = '{}/data/v4.pl'.format(public.get_panel_path())
+        if not 'iptype' in get:
+            return public.returnMsg(False,'参数错误!')
+        if get.iptype == 'auto':
+            public.writeFile(v4_file,' ')
+        elif get.iptype == 'ipv4':
+            public.writeFile(v4_file,' -4 ')
+        else:
+            public.writeFile(v4_file,' -6 ')
+        public.WriteLog('面板设置','将云端请求线路设置为:{}'.format(get.iptype))
+        return public.returnMsg(True,'设置成功!')
+
+
+    def get_request_type(self,get= None):
+        '''
+            @name 获取云端请求方式
+            @author hwliang<2022-02-09>
+            @return python/curl/php        
+        '''
+        http_type_file = '{}/data/http_type.pl'.format(public.get_panel_path())
+        if not os.path.exists(http_type_file): return 'python'
+        http_type = public.readFile(http_type_file).strip()
+        if not http_type:
+            os.remove(http_type_file)
+            return 'python'
+        return http_type
+
+    
+    def set_request_type(self,get):
+        '''
+            @name 设置云端请求方式
+            @author hwliang<2022-02-09>
+            @param http_type<str> python/curl/php
+            @return dict
+        '''
+        http_type_file = '{}/data/http_type.pl'.format(public.get_panel_path())
+        if not 'http_type' in get:
+            return public.returnMsg(False,'参数错误!')
+        if get.http_type == 'php':
+            if not os.listdir('{}/php'.format(public.get_setup_path())): return public.returnMsg(False,'没有可用的PHP版本!')
+
+        public.writeFile(http_type_file,get.http_type)
+        public.WriteLog('面板设置','将云端请求方式设置为:{}'.format(get.http_type))
+        return public.returnMsg(True,'设置成功!')
+
+    
+    def get_node_config(self,get):
+        '''
+            @name 获取节点配置
+            @author hwliang<2022-03-16>
+            @return list
+        '''
+        node_list = [{"node_name":"自动选择","node_id":0,"node_ip":"","status":1}]
+        node_file = '{}/config/api_node.json'.format(public.get_panel_path())
+        if not os.path.exists(node_file): return node_list
+        node_list = json.loads(public.readFile(node_file))
+        for node in node_list:
+            # node['speed'] = self.test_node(node['node_ip'])
+            del(node['node_ip'])
+        return node_list
+
+
+    def test_node(self,node_ip):
+        '''
+            @name 测试节点
+            @author hwliang<2022-03-16>
+            @param node_ip<str> 节点IP
+            @return int 节点延迟
+        '''
+        if not node_ip: node_ip = "api.bt.cn"
+        s_time = time.time()
+        import requests
+        headers = {"Host":"api.bt.cn","User-Agent":"BT-Panel"}
+        try:
+            res = requests.get('https://{}'.format(node_ip),headers=headers,timeout=1,verify=False).text
+        except:
+            return 0
+        e_time = time.time()
+        if res != 'ok': return 0
+        return int((e_time - s_time) * 1000)
+
+    def set_node_config(self,get):
+        '''
+            @name 设置节点配置
+            @author hwliang<2022-03-16>
+            @param node_id<str> 节点ID
+            @return dict
+        '''
+        node_file = '{}/config/api_node.json'.format(public.get_panel_path())
+        if not 'node_id' in get:
+            return public.returnMsg(False,'参数错误!')
+        node_id = int(get.node_id)
+        if not os.path.exists(node_file):
+            return public.returnMsg(False,'节点配置文件不存在!')
+        node_list = json.loads(public.readFile(node_file))
+        node_name = '自动选择'
+        for node in node_list:
+            if node['node_id'] == node_id:
+                node['status'] = 1
+                node_name = node['node_name']
+                continue
+            node['status'] = 0
+        public.writeFile(node_file,json.dumps(node_list))
+        self.sync_node_config()
+        public.WriteLog('面板设置','将节点配置设置为:{}'.format(node_name))
+        return public.returnMsg(True,'设置成功!')
+
+    def sync_cloud_node_list(self):
+        '''
+            @name  同步云端的节点列表
+            @author hwliang<2022-03-16>
+            @return void
+        '''
+        node_file = '{}/config/api_node.json'.format(public.get_panel_path())
+        if not os.path.exists(node_file):
+            public.writeFile(node_file,'[]')
+        
+        node_list = json.loads(public.readFile(node_file))
+        try:
+            url = "{}/lib/other/api_node.json".format(public.get_url())
+            res = public.httpGet(url)
+            if not res: return
+            cloud_list = json.loads(res)
+        except:
+            return
+        for cloud_node in cloud_list:
+            is_insert = True
+            for node in node_list:
+                if node['node_id'] == cloud_node['node_id']:
+                    node['node_name'] = cloud_node['node_name']
+                    node['node_ip'] = cloud_node['node_ip']
+                    is_insert = False
+                    break
+            if is_insert: node_list.append(cloud_node)
+        public.writeFile(node_file,json.dumps(node_list))
+        # self.sync_node_config()
+
+
+    def sync_node_config(self):
+        '''
+            @name 同步节点配置
+            @author hwliang<2022-03-16>
+            @return void
+        '''
+
+        node_file = '{}/config/api_node.json'.format(public.get_panel_path())
+        if not os.path.exists(node_file): return
+        node_list = json.loads(public.readFile(node_file))
+        node_info = {}
+        for node in node_list:
+            if node['status'] == 1:
+                node_info = node
+                break
+        if not node_info: return
+        public.ExecShell("sed -i '/api.bt.cn/d' /etc/hosts")
+        if not node_info['node_ip']: return
+        public.ExecShell("echo '{} api.bt.cn' >> /etc/hosts".format(node_info['node_ip']))

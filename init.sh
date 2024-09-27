@@ -15,10 +15,9 @@ panel_init(){
         panel_path=/www/server/panel
         pidfile=$panel_path/logs/panel.pid
         cd $panel_path
-        env_path=$panel_path/pyenv/bin/activate
+        env_path=$panel_path/pyenv/bin/python3
         if [ -f $env_path ];then
-                source $env_path
-                pythonV=$panel_path/pyenv/bin/python
+                pythonV=$panel_path/pyenv/bin/python3
                 chmod -R 700 $panel_path/pyenv/bin
         else
                 pythonV=/usr/bin/python
@@ -263,13 +262,30 @@ panel_reload()
 
 install_used()
 {
-        if [ ! -f $panel_path/aliyun.pl ];then
-                return;
+        if [ -f $panel_path/aliyun.pl ];then
+                password=$(cat /dev/urandom | head -n 16 | md5sum | head -c 12)
+                username=$($pythonV $panel_path/tools.py panel $password)
+                echo "$password" > $panel_path/default.pl
+                rm -f $panel_path/aliyun.pl
         fi
-        password=$(cat /dev/urandom | head -n 16 | md5sum | head -c 12)
-        username=$($pythonV $panel_path/tools.py panel $password)
-        echo "$password" > $panel_path/default.pl
-        rm -f $panel_path/aliyun.pl
+
+        if [ -f $panel_path/php_mysql_auto.pl ];then
+                bash $panel_path/script/mysql_auto.sh &> /dev/null
+                bash $panel_path/script/php_auto.sh &> /dev/null
+                rm -f $panel_path/php_mysql_auto.pl
+        fi
+
+        pip_file=/www/server/panel/pyenv/bin/pip3
+        python_file=/www/server/panel/pyenv/bin/python3
+        if [ -f $pip_file ];then
+                is_rep=$(ls -l /usr/bin/btpip|grep pip3.)
+                if [ "${is_rep}" != "" ];then
+                        rm -f /usr/bin/btpip /usr/bin/btpython
+                        ln -sf $pip_file /usr/bin/btpip
+                        ln -sf $python_file /usr/bin/btpython
+                fi
+        fi
+        
 }
 
 error_logs()
@@ -288,7 +304,7 @@ case "$1" in
                 ;;
         'restart')
                 panel_stop
-				sleep 1
+		sleep 1
                 panel_start
                 ;;
         'reload')
@@ -309,16 +325,21 @@ case "$1" in
                 if [ -f $panel_path/data/domain.conf ];then
                 	address=$(cat $panel_path/data/domain.conf)
                 fi
+                auth_path=/login
                 if [ -f $panel_path/data/admin_path.pl ];then
                 	auth_path=$(cat $panel_path/data/admin_path.pl)
                 fi
                 if [ "$address" = "" ];then
                 	address=$(curl -sS --connect-timeout 10 -m 60 https://www.bt.cn/Api/getIpAddress)
                 fi
-				pool=http
-				if [ -f $panel_path/data/ssl.pl ];then
-					pool=https
-				fi
+                pool=http
+                if [ -f $panel_path/data/ssl.pl ];then
+                        pool=https
+                fi
+                if [ "$auth_path" == "/" ];then
+                        auth_path=/login
+                fi
+
                 echo -e "=================================================================="
                 echo -e "\033[32mBT-Panel default info!\033[0m"
                 echo -e "=================================================================="
@@ -328,9 +349,11 @@ case "$1" in
                 echo -e "\033[33mWarning:\033[0m"
                 echo -e "\033[33mIf you cannot access the panel, \033[0m"
                 echo -e "\033[33mrelease the following port (8888|888|80|443|20|21) in the security group\033[0m"
+                echo -e "\033[33m注意：初始密码仅在首次登录面板前能正确获取，其它时间请通过 bt 5 命令修改密码\033[0m"
                 echo -e "=================================================================="
                 ;;
         *)
                 $pythonV $panel_path/tools.py cli $1
         ;;
 esac
+

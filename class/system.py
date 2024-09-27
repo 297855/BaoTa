@@ -29,7 +29,7 @@ class system:
         data = session['config']
         data['webserver'] = public.get_webserver()
         #PHP版本
-        phpVersions = ('52','53','54','55','56','70','71','72','73','74')
+        phpVersions = public.get_php_versions()
         
         data['php'] = []
         
@@ -282,14 +282,7 @@ class system:
         key = 'sys_version'
         version = cache.get(key)
         if version: return version
-        import public
-        version = public.readFile('/etc/redhat-release')
-        if not version:
-            version = public.readFile('/etc/issue').strip().split("\n")[0].replace('\\n','').replace('\l','').strip()
-        else:
-            version = version.replace('release ','').replace('Linux','').replace('(Core)','').strip()
-        v_info = sys.version_info
-        version = version + '(Py' + str(v_info.major) + '.' + str(v_info.minor) + '.' + str(v_info.micro) + ')'
+        version = public.get_os_version()
         cache.set(key,version,600)
         return version
     
@@ -320,7 +313,7 @@ class system:
         cpuW = len(set(d_tmp))
         import threading
         p = threading.Thread(target=self.get_cpu_percent_thead,args=(interval,))
-        p.setDaemon(True)
+        # p.setDaemon(True)
         p.start()
         
         used = cache.get('cpu_used_all')
@@ -397,13 +390,16 @@ class system:
             diskInfo.append(tmp)
         return diskInfo
     
-    def GetDiskInfo2(self):
+    def GetDiskInfo2(self, human=True):
         
         #取磁盘分区信息
         key = 'sys_disk'
         diskInfo = cache.get(key)
         if diskInfo: return diskInfo
-        temp = public.ExecShell("df -hT -P|grep '/'|grep -v tmpfs|grep -v 'snap/core'|grep -v udev")[0]
+        if human:
+            temp = public.ExecShell("df -hT -P|grep '/'|grep -v tmpfs|grep -v 'snap/core'|grep -v udev")[0]
+        else:
+            temp = public.ExecShell("df -T -P|grep '/'|grep -v tmpfs|grep -v 'snap/core'|grep -v udev")[0]
         tempInodes = public.ExecShell("df -i -P|grep '/'|grep -v tmpfs|grep -v 'snap/core'|grep -v udev")[0]
         temp1 = temp.split('\n')
         tempInodes1 = tempInodes.split('\n')
@@ -434,7 +430,7 @@ class system:
             except Exception as ex: 
                 public.WriteLog('信息获取',str(ex))
                 continue
-        cache.set(key,diskInfo,10000)
+        cache.set(key,diskInfo,10)
         return diskInfo
 
 
@@ -635,6 +631,7 @@ class system:
         data = cache.get(skey)
         if data:return data
         try:
+            data = {}
             cpu_times_p  = psutil.cpu_times_percent()
             data['user'] = cpu_times_p.user
             data['nice'] = cpu_times_p.nice
@@ -656,9 +653,9 @@ class system:
                 except:
                     continue
                 data['总进程数'] += 1
-            
-        except: pass
-        cache.set(skey,data,60)
+                
+            cache.set(skey,data,60)
+        except: return None
         return data
 
 
@@ -852,7 +849,7 @@ class system:
                 public.ExecShell('mkdir ' + vhostPath)
                 public.ExecShell('/etc/init.d/nginx start')
             
-            result = public.ExecShell('ulimit -n 8192 ; nginx -t -c '+self.setupPath+'/nginx/conf/nginx.conf')
+            result = public.ExecShell('ulimit -n 8192 ; '+self.setupPath+'/nginx/sbin/nginx -t -c '+self.setupPath+'/nginx/conf/nginx.conf')
             if result[1].find('perserver') != -1:
                 limit = self.setupPath + '/nginx/conf/nginx.conf'
                 nginxConf = public.readFile(limit)

@@ -20,7 +20,13 @@ class userlogin:
         self.error_num(False)
         if self.limit_address('?') < 1: return public.returnJson(False,'LOGIN_ERR_LIMIT'),json_header
         post.username = post.username.strip()
-        
+
+        # 核验用户名密码格式
+        if len(post.username) != 32: return public.returnMsg(False,'USER_INODE_ERR'),json_header
+        if len(post.password) != 32: return public.returnMsg(False,'USER_INODE_ERR'),json_header
+        if not re.match(r"^\w+$",post.username): return public.returnMsg(False,'USER_INODE_ERR'),json_header
+        if not re.match(r"^\w+$",post.password): return public.returnMsg(False,'USER_INODE_ERR'),json_header
+
         public.chdck_salt()
         sql = db.Sql()
         user_list = sql.table('users').field('id,username,password,salt').select()
@@ -32,6 +38,7 @@ class userlogin:
         if 'code' in session:
             if session['code'] and not 'is_verify_password' in session:
                 if not hasattr(post, 'code'): return public.returnJson(False,'验证码不能为空!'),json_header
+                if not re.match(r"^\w+$",post.code): return public.returnJson(False,'CODE_ERR'),json_header
                 if not public.checkCode(post.code):
                     public.WriteLog('TYPE_LOGIN','LOGIN_ERR_CODE',('****','****',public.GetClientIp()))
                     return public.returnJson(False,'CODE_ERR'),json_header
@@ -46,9 +53,16 @@ class userlogin:
                 num = self.limit_address('+')
                 return public.returnJson(False,'LOGIN_USER_ERR',(str(num),)),json_header
             _key_file = "/www/server/panel/data/two_step_auth.txt"
+
+            # 密码过期检测
+            if not public.password_expire_check():
+                session['password_expire'] = True
+
             #登陆告警
-            public.login_send_body("账号密码",userInfo['username'],public.GetClientIp(),str(request.environ.get('REMOTE_PORT')))
+            public.run_thread(public.login_send_body,("账号密码",userInfo['username'],public.GetClientIp(),str(int(request.environ.get('REMOTE_PORT')))))
+            # public.login_send_body("账号密码",userInfo['username'],public.GetClientIp(),str(request.environ.get('REMOTE_PORT')))
             if hasattr(post,'vcode'):
+                if not re.match(r"^\d+$",post.vcode): return public.returnJson(False,'验证码格式错误'),json_header
                 if self.limit_address('?',v="vcode") < 1: return public.returnJson(False,'您多次验证失败，禁止10分钟'),json_header
                 import pyotp
                 secret_key = public.readFile(_key_file)
@@ -108,8 +122,7 @@ class userlogin:
             self.limit_address('-')
             cache.delete('panelNum')
             cache.delete('dologin')
-            sess_input_path = 'data/session_last.pl'
-            public.writeFile(sess_input_path,str(int(time.time())))
+            session['session_timeout'] = time.time() + public.get_session_timeout()
             del(data['tmp_token'])
             del(data['tmp_time'])
             public.writeFile(save_path,json.dumps(data))
@@ -131,6 +144,10 @@ class userlogin:
             if not public.get_error_num(skey,10): return '连续10次验证失败，禁止1小时'
             
             s_time = int(time.time())
+            if public.M('temp_login').where('state=? and expire>?',(0,s_time)).field('id,token,salt,expire').count()==0:
+                public.set_error_num(skey)
+                return '验证失败2!'
+
             data = public.M('temp_login').where('state=? and expire>?',(0,s_time)).field('id,token,salt,expire').find()
             if not data:
                 public.set_error_num(skey)
@@ -160,8 +177,7 @@ class userlogin:
             self.limit_address('-')
             cache.delete('panelNum')
             cache.delete('dologin')
-            sess_input_path = 'data/session_last.pl'
-            public.writeFile(sess_input_path,str(int(time.time())))
+            session['session_timeout'] = time.time() + public.get_session_timeout()
             self.set_request_token()
             self.login_token()
             self.set_cdn_host(get)
@@ -285,13 +301,14 @@ class userlogin:
             self.limit_address('-')
             cache.delete('panelNum')
             cache.delete('dologin')
-            sess_input_path = 'data/session_last.pl'
-            public.writeFile(sess_input_path,str(int(time.time())))
+            session['session_timeout'] = time.time() + public.get_session_timeout()
             self.set_request_token()
             self.login_token()
             login_type = 'data/app_login.pl'
             if os.path.exists(login_type):
                 os.remove(login_type)
+            default_pl = "{}/default.pl".format(public.get_panel_path())
+            public.writeFile(default_pl,public.GetRandomString(12))
             return public.returnJson(True,'LOGIN_SUCCESS'),json_header
         except Exception as ex:
             stringEx = str(ex)

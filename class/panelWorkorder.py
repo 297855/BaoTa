@@ -130,7 +130,7 @@ class panelWorkorder:
                         if result["check_version"]:
                             pp = panelPlugin.panelPlugin()
                             soft_list = pp.get_soft_list(common.dict_obj())
-                            if soft_list["pro"] != -1:
+                            if soft_list["ltd"] != -1:
                                 is_allow = True
                             else:
                                 is_allow = False
@@ -235,13 +235,13 @@ class panelWorkorder:
         try:
             from flask import jsonify
             data = get
-            debug_path = 'data/debug.pl'
-            if os.path.exists(debug_path):
-                return jsonify({
-                    "status": False,
-                    "msg": "暂不支持在开发者模式提交工单！",
-                    "error_code": 10004
-                })
+            # debug_path = 'data/debug.pl'
+            # if os.path.exists(debug_path):
+            #     return jsonify({
+            #         "status": False,
+            #         "msg": "暂不支持在开发者模式提交工单！",
+            #         "error_code": 10004
+            #     })
             contents = data.contents
             user_info = self.find_user_info()
             if not user_info:
@@ -396,7 +396,7 @@ class panelWorkorder:
                         kwargs = {}
                     x_thread = threading.Thread(target=ws.run_forever,
                                                 kwargs=kwargs)
-                    x_thread.setDaemon(True)
+                    # x_thread.setDaemon(True)
                     x_thread.start()
                     clients[workorder] = ws
         except Exception as e:
@@ -452,7 +452,7 @@ class panelWorkorder:
                     # 转发
                     for key, _ws in self.panel_clients.get(workorder,
                                                            {}).items():
-                        if _ws and not _ws.closed:
+                        if _ws and _ws.connected:
                             _ws.send(message)
 
                     if temp_message:
@@ -512,7 +512,7 @@ class panelWorkorder:
             if debug:
                 print("pong")
             for key, _ws in self.panel_clients.get(workorder, {}).items():
-                if _ws and not _ws.closed:
+                if _ws and _ws.connected:
                     _ws.send("pong")
 
         def _on_open(socket):
@@ -581,7 +581,7 @@ class panelWorkorder:
                                     if debug:
                                         print("转发到客户端：{}".format(session_id))
                                     try:
-                                        if _ws and not _ws.closed:
+                                        if _ws and _ws.connected:
                                             _ws.send(message)
                                     except:
                                         pass
@@ -729,7 +729,7 @@ class panelWorkorder:
                 keep_client_connect = False
                 if workorder in self.panel_clients.keys():
                     for key, _ws in self.panel_clients[workorder].items():
-                        if _ws and not _ws.closed:
+                        if _ws and _ws.connected:
                             keep_client_connect = True
 
                 if not keep_client_connect:
